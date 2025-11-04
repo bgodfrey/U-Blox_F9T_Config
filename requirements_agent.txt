@@ -1,0 +1,16 @@
+asyncio==4.0.0
+future==1.0.0
+grpcio==1.76.0
+grpcio-tools==1.76.0
+iso8601==2.1.0
+json5==0.12.1
+pathlib==1.0.1
+protobuf==6.33.0
+pynmeagps==1.0.54
+pyrtcm==1.1.9
+pyserial==3.5
+pyubx2==1.2.58
+PyYAML==6.0.3
+serial==0.0.97
+typing==3.7.4.3
+typing_extensions==4.15.0

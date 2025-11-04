@@ -1,0 +1,114 @@
+syntax = "proto3";
+package rtcm;
+
+enum Role {
+  UNSPECIFIED = 0;  // default if older agents don't send a role
+  BASE        = 1;  // produces RTCM to caster (e.g., ZED-F9P base)
+  RECEIVER    = 2;  // consumes RTCM from caster (e.g., ZED-F9T timing rover)
+  // (room for future: ROLE_MONITOR, ROLE_SIMULATOR, etc.)
+}
+
+message RtcmFrame { bytes data = 1; uint64 seq = 2; int64 unix_ms = 3; }
+
+message PublishOpen { string mount = 1; string token = 2; string label = 3; }
+
+message PublishMsg { oneof payload { PublishOpen open = 1; RtcmFrame frame = 2; } }
+
+message PublishAck { uint64 frames = 1; }
+
+message Ping { int64 unix_ms = 1; }
+
+message SubscribeRequest { string mount = 1; string token = 2; string label = 3; }
+
+message FileBegin { string name = 1; uint64 size = 2; }
+
+message FileChunk { bytes data = 1; }
+
+message FileEnd   { string name = 1; uint32 status = 2; string error = 3; }
+
+
+
+message DeviceHello {
+  string device_id = 1;   // SEC-UNIQID or fallback
+  string model     = 2;   // e.g., "ZED-F9T"
+  string fwver     =   3;  // e.g., "TIM 2.20
+  string protver   =   4;  // e.g., "29.22"
+  string hwver     =   5;  // e.g., "HPG 1.30"
+  string label     = 6;  // human-friendly site/host name 
+}
+
+message HelloAck {
+  bool   ok              = 1; 
+  Role   role            = 2;  // server-decided
+  string alias           = 3;  // canonical site name
+  string mount           = 4;  // stream to use (often derived from alias)
+  uint32 config_version  = 5;  // manifest version/hash
+  string label           = 6;  // runtime log label (server-provided)
+  string token           = 7;  // optional
+}
+
+message Telemetry {
+  int64  unix_ms = 1;
+  double temp_c  = 2;     // UBX-MON-SYS
+  int64  qerr_ns = 3;     // UBX-TIM-TP
+  bool   utc_ok  = 4;     // NAV-TIMEUTC.validUTC
+
+  // --- satellite summary (1 Hz) ---
+  uint32 num_vis = 5;   // total visible channels in NAV-SAT
+  uint32 num_used = 6;  // channels flagged 'used in solution'
+  uint32 gps_used = 7;  // gnssId=0
+  uint32 gal_used = 8;  // gnssId=2
+  uint32 bds_used = 9;  // gnssId=3
+  uint32 glo_used = 10;  // gnssId=6
+  float  avg_cno  = 11;  // mean C/N0 over all channels
+  float  pdop     = 12;  // from NAV-DOP (scaled)
+}
+
+message CfgVal {
+  string key = 1;
+  oneof val {
+    uint64 u64 = 2;
+    int64  i64 = 3;
+    double f64 = 4;
+    bool   b   = 5;
+    string s   = 6;  // rare, but handy for text fields
+  }
+}
+
+enum Layer { LAYER_UNSPECIFIED = 0; RAM = 1; BBR = 2; FLASH = 3; }
+
+message CfgSet {
+  repeated CfgVal items = 1;
+  repeated string apply_to_layers = 2;  // e.g. ["RAM"]
+  string          verify_layer     = 3; // e.g. "RAM"
+  uint32          version          = 4; // bump on edits
+}
+
+message ApplyResult {
+  string name    = 1;
+  bool   ok      = 2;
+  string error    = 3;  // mismatches etc.
+}
+
+message ControlMsg {
+  oneof msg {
+    DeviceHello hello   = 1;   // agent -> server (first)
+    Telemetry   telem   = 2;   // agent -> server (periodic)
+    HelloAck    ack     = 3;   // server -> agent (after hello)
+    Ping        ping    = 4;   // server -> agent (after hello)
+    CfgSet      cfgset  = 10;  // server -> agent
+    ApplyResult result  = 11;  // agent -> server
+    FileBegin file_begin = 100;
+    FileChunk file_chunk = 101;
+    FileEnd   file_end   = 102;
+  }
+}
+
+service Caster {
+  rpc Publish(stream PublishMsg) returns (PublishAck);          // base → server (client-stream)
+  rpc Subscribe(SubscribeRequest) returns (stream RtcmFrame);   // server → rover (server-stream)
+}
+
+service Control {
+  rpc Pipe(stream ControlMsg) returns (stream ControlMsg);
+}
