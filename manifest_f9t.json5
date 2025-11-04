@@ -1,0 +1,138 @@
+{
+  global: {
+    apply_to_layers: ["RAM"],
+    verify_layer: "RAM",
+    config: [
+      // ---- Constellations & signals ----
+      { key: "CFG_SIGNAL_GPS_ENA",        value: 1 },
+      { key: "CFG_SIGNAL_GPS_L1CA_ENA",   value: 1 },
+      { key: "CFG_SIGNAL_GPS_L2C_ENA",    value: 1 },
+      { key: "CFG_SIGNAL_GPS_L5_ENA",     value: 0 },
+
+      { key: "CFG_SIGNAL_GAL_ENA",        value: 1 },
+      { key: "CFG_SIGNAL_GAL_E1_ENA",     value: 1 },
+      { key: "CFG_SIGNAL_GAL_E5B_ENA",    value: 1 },
+
+      { key: "CFG_SIGNAL_BDS_ENA",        value: 1 },
+      { key: "CFG_SIGNAL_BDS_B1_ENA",     value: 1 },
+      { key: "CFG_SIGNAL_BDS_B2_ENA",     value: 1 },
+
+      { key: "CFG_SIGNAL_SBAS_ENA",       value: 0 },
+      { key: "CFG_SIGNAL_QZSS_ENA",       value: 0 },
+
+      // ---- Timepulse global modes (use FREQ + RATIO) ----
+      { key: "CFG_TP_PULSE_DEF",          value: 1 },     // 1 = FREQ
+      { key: "CFG_TP_PULSE_LENGTH_DEF",   value: 0 },     // 0 = RATIO
+      { key: "CFG_TP_ANT_CABLEDELAY",     value: 10 },    // ns
+
+      // ---- TP1: 1 Hz, 100 µs duty (0.01%), align to TOW ----
+      { key: "CFG_TP_TP1_ENA",            value: 1 },
+      { key: "CFG_TP_FREQ_TP1",           value: 1 },
+      { key: "CFG_TP_DUTY_TP1",           value: 0.01 },  // % (RATIO)
+      { key: "CFG_TP_SYNC_GNSS_TP1",      value: 1 },
+      { key: "CFG_TP_USE_LOCKED_TP1",     value: 1 },
+      { key: "CFG_TP_ALIGN_TO_TOW_TP1",   value: 1 },
+      { key: "CFG_TP_TIMEGRID_TP1",       value: 0 },     // 0=UTC, 1=GPS
+      { key: "CFG_TP_FREQ_LOCK_TP1",      value: 1 },
+      { key: "CFG_TP_DUTY_LOCK_TP1",      value: 0.01 },
+
+      // UBX telemetry at 1 Hz
+      { key: "CFG_MSGOUT_UBX_TIM_TP_USB",       value: 1 },
+      { key: "CFG_MSGOUT_UBX_NAV_TIMEUTC_USB",  value: 1 },
+      { key: "CFG_MSGOUT_UBX_MON_SYS_USB",      value: 1 },
+      { key: "CFG_MSGOUT_UBX_NAV_SAT_USB", value: 1 },
+      { key: "CFG_MSGOUT_UBX_NAV_DOP_USB", value: 1 },
+
+      // ---- TP2: 10 MHz, 50% duty, align to TOW ----
+      { key: "CFG_TP_TP2_ENA",            value: 1 },
+      { key: "CFG_TP_FREQ_TP2",           value: 10000000 },
+      { key: "CFG_TP_DUTY_TP2",           value: 50.0 },  // %
+      { key: "CFG_TP_ALIGN_TO_TOW_TP2",   value: 1 },
+      { key: "CFG_TP_SYNC_GNSS_TP2",      value: 1 },
+      { key: "CFG_TP_TIMEGRID_TP2",       value: 0 },
+      { key: "CFG_TP_DRSTR_TP2",          value: 1 },     // 1=3 mA, 3=12 mA (pick what you want)
+      { key: "CFG_TP_USE_LOCKED_TP2",     value: 1 },
+      { key: "CFG_TP_FREQ_LOCK_TP2",      value: 10000000 },
+      { key: "CFG_TP_DUTY_LOCK_TP2",      value: 50.0 },
+
+      {key: "CFG_TMODE_MODE", value: 2}  // Fixed
+    ]
+  },
+
+  role: {
+    base: {
+      config: [
+        { "key": "CFG_USBOUTPROT_RTCM3X", "value": 1 },
+        { "key": "CFG_USBOUTPROT_UBX", "value": 1 },
+        { "key": "CFG_USBOUTPROT_NMEA", "value": 0 },
+        { "key": "CFG_MSGOUT_RTCM_3X_TYPE1005_USB", "value": 1 },
+        { "key": "CFG_MSGOUT_RTCM_3X_TYPE1077_USB", "value": 1 },
+        { "key": "CFG_MSGOUT_RTCM_3X_TYPE1087_USB", "value": 1 },
+        { "key": "CFG_MSGOUT_RTCM_3X_TYPE1097_USB", "value": 1 },
+        { "key": "CFG_MSGOUT_RTCM_3X_TYPE1127_USB", "value": 1 },
+        { "key": "CFG_MSGOUT_RTCM_3X_TYPE1230_USB", "value": 1 },
+        { "key": "CFG_MSGOUT_RTCM_3X_TYPE4072_0_USB", "value": 1 },
+        { "key": "CFG_MSGOUT_RTCM_3X_TYPE4072_1_USB", "value": 1 },
+        // { key: "CFG_MSGOUT_RTCM_3X_TYPE1033_USB", "value": 1 } // if supported
+      ]
+    },
+    receiver: {
+      config: [
+        { key: "CFG_USBINPROT_RTCM3X", value: 1 },
+        { key: "CFG_USBOUTPROT_UBX",   value: 1 },
+        { key: "CFG_MSGOUT_UBX_RXM_RTCM_USB", value: 1 },
+        { key: "CFG_MSGOUT_UBX_NAV_PVT_USB",  value: 1 },
+        { key: "CFG_USBOUTPROT_RTCM3X", value: 0 },  // Ensure no RTCM3 OUT on receiver USB
+        { key: "CFG_MSGOUT_UBX_MON_COMMS_USB",  value: 1}
+      ]
+    }
+  },
+
+  devices: {
+    "1CA16A41BC": {
+      alias: "GATTINI",
+      role: "base",
+      serial: { port: "/dev/ttyACM0", baud: 115200 },
+      position: { format: "LLH", lat_deg: 33.3534828, lon_deg: -116.8624633, height_m: 1665.026, acc_m: 0.02 },
+      antenna: {
+        model: "A.120.A.101111",
+        serial: null,
+        cable_length_m: 15,
+        velocity_factor: 0.8,
+        notes: "Pole mount"
+      },
+      config: [
+        { key: "CFG_TP_ANT_CABLEDELAY", value: 50 }
+      ]
+    },
+
+    "9D02FA41BC": {
+      alias: "WINTERS",
+      role: "base",
+      serial: { port: "/dev/ttyACM0", baud: 115200 },
+      position: { format: "LLH", lat_deg: 33.3569335, lon_deg: -116.866145, height_m: 1669.977, acc_m: 0.02 },
+      antenna: {
+        model: "A.120.A.101111",
+        serial: null,
+        cable_length_m: 15,
+        velocity_factor: 0.8,
+        notes: "Dome mount"
+        }
+      },
+
+      "DBA55A41BF": {
+      alias: "FERN",
+      role: "receiver",
+      serial: { port: "/dev/ttyACM0", baud: 115200 },
+      // For receivers, 'position' isn’t used by the device (it’s base-only), OK to keep as metadata if you want:
+      position: { format: "LLH", lat_deg: 37.422, lon_deg: -122.084, height_m: 12.345, acc_m: 0.02 },
+      antenna: {
+        model: "A.120.A.101111",
+        serial: null,
+        cable_length_m: 15,
+        velocity_factor: 0.8,
+        notes: "Test system"
+      }  
+    }
+  }
+}
