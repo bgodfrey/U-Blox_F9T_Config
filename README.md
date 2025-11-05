@@ -103,6 +103,73 @@ The server exposes two gRPC services:
 
 
 
+## Overview of Configuration File
+The configuration file is, by default, given in *manifest_f9t.json5*. It defines the configuration settings for all clients via a tiered setting. More information can be found in either the *[Zed-F9T integration manual](https://content.u-blox.com/sites/default/files/ZED-F9T_IntegrationManual_UBX-21040375.pdf)* or in the *[Zed-F9T interface description](https://content.u-blox.com/sites/default/files/ZED-F9T_InterfaceDescription_%28UBX-18053584%29.pdf?utm_content=UBX-18053584)*. These tiers include
+
+* Global settings: Includes settings common to all devices
+    *  *apply_to_layers*: Can be RAM, BBR (battery backed RAM), or flash. Flash is persistent so be careful. You may be able to reset via *UBX-CFG-RST*. If you want to reset the BBR, you can tie the *RST* pin low as described in the [Zed-F9T Hookup Guide](https://learn.sparkfun.com/tutorials/gnss-timing-breakout---zed-f9t-qwiic-hookup-guide/all). BBR lasts for about a day.
+    * *verify_layers*: Will perform a check on the configuration keys at the given layer to confirm that configuration keys were correctly applied. Will not stop operations though if things don't work though. This is useful because, otherwise, there is no way to tell if you have configured the device with the requested settings.
+    * *CFG_SIGNAL_\* keys*: For Panoseti, these are set as following:
+    
+        * Constellations that are enabled
+            
+            1. GPS L1C/A, L2C
+            2. Galileo E1B/C, E5b
+            3. BeiDou: B1I, B2I
+
+        * Constellations that are disabled
+            1. GLONASS L1OF,L2OF
+            2. QZSS L1C/A, L2C
+            3. SBAS (satellite based augmentation system)
+            4. NavIC (not supported by the Zed F9T-00B)
+
+        * Note that by default, all satellite systems are enabled so it is important to select which ones you want
+
+* Role settings
+
+    * A client can be either a base or a receiver. Base clients enable RTCM messages that are sent to the receiver. The suggested messages for a reference base station are given in the Zed F9T-Integration manual and are also given below. All are set to rate 1 on the USB.
+
+        * RTCM 1005 Stationary RTK reference station antenna reference point
+        * RTCM 1077 GPS MSM7 (type of RTCM message)
+        * RTCM 1088 GLONASS MSM7
+        * RTCM 1097 Galileo MSM7
+        * RTCM 1127 BeiDou MSM7
+        * RTCM 1230 GLONASS code-phase biases
+        * RTCM 4072.1 Additional reference station information (4072.0 also enabled)
+            This message in particular is critical since it is required for the receiver to start using differential correction data
+
+* Device settings
+    * Devices are designated by a unique hardware identifier obtained by polling the *UBX-SEC-UNIQID* register. This gives a unique 5-byte hardware ID for each chip. To get this unique ID, a helpful utility script called *get_unique_id.py* is provided. You can run it via
+    ```bash
+    python get_unique_id.py
+    ```
+    This assumes that the device is at */dev/ttyACM0*. If it isn't you can add the location of the device as an optional argument. For example:
+    ```bash
+    python get_unique_id.py '/dev/ttyACM1'
+    ```
+    This script will also give you some other information (output from polling *UBX-MON-VER*) about the device including the following:
+        
+        * uniqid: Unique 5-byte hardware ID of the device (output as hex)
+        * model: Model of the device
+        * fwver: Firmware version
+        * protver: Protocol version
+        * hwver: Hardware version
+        * extensions: Some subset of the following:
+            
+            1. ROM BASE: Underlying firmware version in ROM
+            2. FWVER: Firmware version (TIM implies Time Sync)
+            3. PROTVER: Protocol version 
+            4. MOD: Model
+            5. Supported major GNSS
+            6. Supported augmentation systems
+            7. Unknown; my guess is that this is unsupported constellations
+    
+    * Devices are also designated by an alias, which gives the name of the site. This is nice so have more than a hex string to identify the sites by. 
+    * Position is used to configure the position of the device. This actually corresponds to a set of registers, but it's nicer to just input coordinates and have the configuration script set the associated registers. This position can be determined however you like, but PANOSETI uses a separate Zed-F9P to record position to high accuracy.
+    * There is a port and baud setting in the manifest right now, which isn't used. You can either have the port be auto-discovered or add it when you start the agent script.
+    * Antenna information also isn't used for anything except for notes that can be referenced later. 
+
+
 
 
 ## How to Run
