@@ -4,13 +4,13 @@ Overview (global description)
 This program is the agent that runs on a DAQ node connected to a u‑blox ZED‑F9T (or similar) receiver over USB/serial. It talks to a centralserver/headnode using two gRPC services:
 
 1) Control (bidirectional streaming):
-   - Agent → Server: hello, result (apply status), telem (telemetry).
-   - Server → Agent: ack (role assignment + credentials), cfgset (VALSET configuration), ping (server heartbeat), optional file transfer.
-   - The agent also sends periodic telemetry derived from UBX messages.
+	- Agent → Server: hello, result (apply status), telem (telemetry).
+	- Server → Agent: ack (role assignment + credentials), cfgset (VALSET configuration), ping (server heartbeat), optional file transfer.
+	- The agent also sends periodic telemetry derived from UBX messages.
 
 2) Caster (data plane):
-   - If role is BASE: the agent publishes RTCM3 frames read from the GNSS USB port to the server via a client-streaming  RPC. The server counts frames and (optionally) fans them out to rovers.
-   - If role is RECEIVER the agent subscribes to RTCM3 frames from the server via a server-streaming RPC and writes them to the GNSS USB port.
+	- If role is BASE: the agent publishes RTCM3 frames read from the GNSS USB port to the server via a client-streaming  RPC. The server counts frames and (optionally) fans them out to rovers.
+	- If role is RECEIVER the agent subscribes to RTCM3 frames from the server via a server-streaming RPC and writes them to the GNSS USB port.
 
 Key internal components
 -----------------------
@@ -38,7 +38,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from grpc.aio import AioRpcError
 from serial import Serial
-from pyubx2 import POLL, SET, UBXReader, UBXMessage, UBX_PROTOCOL
+# Requires:
+from pyubx2.exceptions import UBXMessageError, UBXParseError, UBXStreamError, UBXTypeError
+from pyubx2 import POLL, SET, UBX_CONFIG_DATABASE, UBXReader, UBXMessage, UBX_PROTOCOL
+from pyubx2 import UBX_CONFIG_DATABASE as CFGDB
 import asyncio, contextlib, glob, io, json5, os, re, signal, struct, sys, time
 import grpc, serial
 import caster_setup_pb2 as pb
@@ -554,6 +557,140 @@ async def _write_ubx(ser, ser_lock, msg: UBXMessage) -> None:
 		ser.write(msg.serialize())
 		ser.flush()
 
+"""
+Verify that the cfgData [(KEY_NAME, value), ...] you just applied
+is actually present in the device's CFG DB (via UBX-CFG-VALGET).
+
+Prints one line per key:
+<KEY_NAME> : OK [LAYER]
+<KEY_NAME> : MISMATCH (wanted X, got Y) [LAYER]
+
+Returns: (ok: bool, mismatches: list[str])
+"""
+
+async def _valget_verify(ser, ser_lock, cfgData, layer: str = "RAM", timeout_per_chunk: float = 3.0):
+	# --- helpers --------------------------------------------------------------
+	def _name_to_keyid(name: str) -> int:
+		rec = CFGDB.get(name.upper())
+		if rec is None:
+			raise KeyError(f"Unknown CFG name: {name}")
+		# pyubx2 schema variants:
+		if isinstance(rec, dict):
+			# some versions: {"keyID": 271646751, ...}
+			return int(rec["keyID"])
+			if kid is None:
+				raise KeyError(f"CFG entry for {name} has no keyID field")
+			return int(kid)
+		# common variant: tuple where index 0 is keyID (e.g., (271646751, 'L001', ...))
+		if isinstance(rec, (tuple, list)) and len(rec) >= 1:
+			return int(rec[0])
+			# fallback
+		raise KeyError(f"Unsupported CFGDB entry type for {name}: {type(rec)}")
+
+	def _merge_cfg_results(results_by_name: dict, parsed):
+		# Your UBXMessage._set_attribute_cfgval() sets each key *name* as an attribute
+		# on the parsed message. Collect those into {NAME: value}.
+		d = getattr(parsed, "__dict__", {})
+		for k, v in d.items():
+			if k.startswith("_"):
+				continue
+			# skip non-CFG fields commonly present on some UBX objects
+			if k in ("identity",):
+				 continue
+			results_by_name[k.upper()] = v
+
+	def _equal(want, have) -> bool:
+		# Normalize tiny type differences: bool vs int, float rounding
+		if isinstance(want, bool):
+				return bool(have) == want
+		if isinstance(want, (int, bool)) and isinstance(have, (int, bool)):
+				return int(have) == int(want)
+		if isinstance(want, float):
+				try:
+					return abs(float(have) - want) <= 1e-9
+				except Exception:
+					return False
+		# strings or others → string compare
+		return str(have) == str(want)
+
+    # --- map requested names ----	
+	want_by_name = {}
+	want_names = []
+	for name, val in cfgData:
+		key = name.strip().upper().replace("-", "_")
+		try:
+			kid = _name_to_keyid(key)
+		except KeyError:
+			# If a name isn't in pyubx2 DB, skip it
+			continue
+		want_by_name[key] = val
+		want_names.append(key)
+
+	if not want_names:
+		return True, []  # nothing to verify
+
+	poll_layer = {"RAM": 0, "BBR": 1, "FLASH": 2, "DEFAULT": 7}.get(layer.upper(), 0)	
+
+	got_by_name = {}
+
+	# --- poll in chunks to keep replies small --------------------------------
+	CHUNK = 32
+	for i in range(0, len(want_names), CHUNK):
+		chunk_names = want_names[i:i+CHUNK]
+
+		msg_get = UBXMessage.config_poll(layer=poll_layer, position=0, keys=chunk_names)
+
+		# Lock serial for the whole poll+read window so we don't race demux
+		async with ser_lock:
+			ser.write(msg_get.serialize())
+			ser.flush()
+
+			rdr = UBXReader(ser, protfilter=UBX_PROTOCOL)  # UBX only
+			deadline = time.time() + timeout_per_chunk
+			last_valget_time = None
+
+			while time.time() < deadline:
+				try:
+					raw, parsed = rdr.read()  # blocking read
+				except (UBXMessageError, UBXParseError, UBXStreamError, UBXTypeError):
+					continue
+				if not parsed:
+					continue
+				
+				# We expect one or more CFG-VALGET replies covering the requested keys
+				if getattr(parsed, "identity", "") == "CFG-VALGET":
+					_merge_cfg_results(got_by_name, parsed)
+					last_valget_time = time.time()
+					# Stop early if we have all keys from this chunk
+					if all(n in got_by_name for n in chunk_names):
+						break
+					continue
+				# If quiet for 300ms after last relevant frame, assume done
+					if last_valget_time and (time.time() - last_valget_time) > 0.3:
+						break
+
+# --- pretty-print & compare ----------------------------------------------
+	mismatches = []
+	ok = True
+	for cfg_name in want_names:
+		want = want_by_name[cfg_name]
+		have = got_by_name.get(cfg_name)
+		if have is None:
+			print(f"{cfg_name:36s} : MISSING (wanted {want!r}) [{layer}]")
+			mismatches.append(f"{cfg_name}: missing (want={want!r})")
+			ok = False
+			continue
+		if _equal(want, have):
+			print(f"{cfg_name:36s} : OK [{layer}]")
+		else:
+			print(f"{cfg_name:36s} : MISMATCH (wanted {want!r}, got {have!r}) [{layer}]")
+			mismatches.append(f"{cfg_name}: got {have!r}, want {want!r}")
+			ok = False
+	return ok, mismatches
+
+
+
+
 # Set CFG‑PRT for USB (portID=3) to control protocol input/output masks
 async def cfg_prt_usb(ser, ser_lock, in_mask: int, out_mask: int) -> None:
 	msg = UBXMessage(
@@ -706,6 +843,8 @@ def discover_f9x(timeout=0.6, port: Optional[str] = None):
 						uid_hex = (f"{uid:010X}" if isinstance(uid, int) else bytes(uid).hex().upper())
 						print(uid_hex)
 						return dev, uid_hex
+		except RuntimeError:
+			sys.exit(1)
 		except Exception:
 			pass
 	raise RuntimeError("No u-blox device found")
@@ -813,13 +952,13 @@ High-level flow:
   1) Open a gRPC channel and start a client-streaming Publish RPC.
   2) Send a single OPEN message containing mount/token/label (acts like a handshake/metadata).
   3) Repeatedly read RTCM frames from the demux queue (RTCM queue):
-	   • If we see the sentinel (None), the upstream pipeline is shutting down → exit loop.
-	   • Otherwise write each frame as a PublishMsg(frame=RtcmFrame(...)).
+		• If we see the sentinel (None), the upstream pipeline is shutting down → exit loop.
+		• Otherwise write each frame as a PublishMsg(frame=RtcmFrame(...)).
   4) On orderly exit (closing=True), half-close the stream (done_writing) and await the server's
 	 final PublishAck that reports the total number of frames the server counted.
   5) Robustness:
-	   • Periodic timeout on queue get() keeps the loop cancellable.
-	   • Separate exception paths annotate exit_reason for clear diagnosis.
+		• Periodic timeout on queue get() keeps the loop cancellable.
+		• Separate exception paths annotate exit_reason for clear diagnosis.
 
 Parameters:
   ser       : pyserial Serial (not used here; only for symmetry / future-proofing)
@@ -894,7 +1033,7 @@ async def publish_loop(ser, ser_lock, mount, token, rtcm_q=None):
 					continue
 				
 				try:
-				   # Forward one RTCM frame to the server. Attach a locally-generated seq and millisecond timestamp for debugging.
+					# Forward one RTCM frame to the server. Attach a locally-generated seq and millisecond timestamp for debugging.
 					await call.write(pb.PublishMsg(frame=pb.RtcmFrame(data=frame, seq=seq, unix_ms=int(time.time()*1000))))
 					seq += 1
 				except grpc.aio.AioRpcError as e:
@@ -1181,6 +1320,17 @@ async def control_pipe(ser, ser_lock, uid_hex, fwver, protver, hwver, mount_toke
 								# Non-fatal: we continue with remaining batches but report in logs.
 								print(f"[valset] batch {i//CHUNK} failed: {e}")
 						print(f"[valset] applied {applied}/{len(cfgData)} items via config_set")
+
+						verify_layer = (getattr(cfgset, "verify_layer", "") or "RAM").upper()
+						print(f'[cfgset] checking layer {verify_layer}')
+						ok_verify, mismatches = await _valget_verify(ser, ser_lock, cfgData, layer=verify_layer, timeout_per_chunk=1.0)
+						if not ok_verify:
+							print("[cfgset] verify mismatches:")
+							for m in mismatches:
+								print("  -", m)
+							ok, err = False, "verify_failed"
+						else:
+							print(f"[cfgset] no verify mismatches of {len(cfgData)} keys")
 
 						# Ensure the UBX messages required for our TelemetryAgg are enabled: TIM-TP (qErr + utc flag), MON-SYS (temp), NAV-SAT (counts/CN0), NAV-DOP (PDOP). USB rates are given per measurement cycle
 						await _cfg_msg_usb_rate_ubx(ser, ser_lock, 0x0D, 0x01, 1)  # TIM-TP

@@ -8,15 +8,15 @@ This repo contains scripts for configuring a network of U-Blox F9T receivers int
 *U-Blox F9T Receiver available from [Sparkfun](https://web.archive.org/web/20250814191842/https://www.sparkfun.com/sparkfun-gnss-timing-breakout-zed-f9t-qwiic.html)*
 
 1. Multi-band support for bands of interest (GPS, Galileo, and BeiDou) although GLONASS is also supported.
-2. Precise timing quoted at 5 ns absolute and 2.5 ns absolute 1σ timing accuracy
+2. Precise timing quoted at 5 ns absolute and 2.5 ns differential 1σ timing accuracy
 
     a. Sends out quantization (*qerr* corrections that give corrections to the current 1 pps tick)
 3. Ability to use one F9T as a base station to send real time correction message (RTCM) correction data to improve accuracy
 4. Two time pulse outputs for 1 pps / 10 MHz outputs (configurable up to 25 MHz)
-5. Can be operated from a PC's USB board (low power)
+5. Can be operated from a PC's USB port (low power)
 
 
-PANOSETI is using these as an alternative to more precise fiber-optic based timing systems (e.g. White Rabbit based on Synchronous Ethernet and the IEEE 1588 Precision Time Protocol - see [Wikipedia](https://en.wikipedia.org/wiki/White_Rabbit_Project) for more information where ultra-precise timing requirements are not required for science and where fiber optic trenching is cost-prohibitive (time-to-science, labor, cost). We use this as a proof-of-concept *good enough* alternative rather than a de facto replacement.
+PANOSETI is using these as an alternative to more precise fiber-optic based timing systems (e.g. White Rabbit based on Synchronous Ethernet and the IEEE 1588 Precision Time Protocol - see [Wikipedia](https://en.wikipedia.org/wiki/White_Rabbit_Project) for more information) where ultra-precise timing requirements are not required for science and where fiber optic trenching is cost-prohibitive (time-to-science, labor, cost). We use this as a proof-of-concept, *good enough* alternative rather than a de facto replacement.
 
 ## Configuration for PANOSETI
 PANOSETI consists of a headnode and a bunch of data acquisition (DAQ) nodes. Each telescope/dome has a single DAQ node. Data are collected by each DAQ node and then aggregated onto the headnode at the end of a data acquisition period so as to minimize computational burden on each DAQ node. (This could lead to bottlenecks and ultimately packet loss, which needs to be avoided). This operational principle of minimizing compute on the DAQ nodes has informed the code setup for the GNSS receivers as well.  
@@ -26,7 +26,7 @@ PANOSETI consists of a headnode and a bunch of data acquisition (DAQ) nodes. Eac
 *Basic setup of the code where the headnode serves as an intermediary between a base and some number of receivers.*
 
 
-The picture above describes the basic idea of how the receivers are configured. Each DAQ node can be configured as either a *receiver* or a *base*. Each base pushes RTCM corrections back to the headnode, which is then responsible for forwarding them to any receiver in the network. Designation of base/receiver is decided in a config file. This config file also contains all the registers needed to configure any client (F9T) in the network. In this way, the network is agnostic to which client is a base/receiver and it can also handle multiple bases/receivers depending on the need of the user. It's also simple to add more devices to the network just be adding to the config file.
+The picture above describes the basic idea of how the receivers are configured. Each DAQ node can be configured as either a *receiver* or a *base*. Each base pushes RTCM corrections back to the headnode, which is then responsible for forwarding them to any receiver in the network. Designation of base/receiver is decided in a config file (see [Overview of Configuration File](#overview-of-configuration-file)). This config file also contains all the registers needed to configure any client (F9T) in the network. In this way, the network is agnostic to which client is a base/receiver and it can also handle multiple bases/receivers depending on the need of the user. It's also simple to add more devices to the network just be adding to the config file.
 
 ## Overview of Setup
 This system connects U-Blox F9T GNSS receivers to a central control and data distribution server. It provides configuration, telemetry, and RTCM data streaming over gRPC.
@@ -102,9 +102,8 @@ The server exposes two gRPC services:
 
 
 
-
 ## Overview of Configuration File
-The configuration file is, by default, given in *manifest_f9t.json5*. It defines the configuration settings for all clients via a tiered setting. More information can be found in either the *[Zed-F9T integration manual](https://content.u-blox.com/sites/default/files/ZED-F9T_IntegrationManual_UBX-21040375.pdf)* or in the *[Zed-F9T interface description](https://content.u-blox.com/sites/default/files/ZED-F9T_InterfaceDescription_%28UBX-18053584%29.pdf?utm_content=UBX-18053584)*. These tiers include
+The configuration file is, by default, given in *manifest_f9t.json5*. It defines the configuration settings for all clients via a .json5 file organized in a tiered fashion. Information on registers can be found in either the *[Zed-F9T integration manual](https://content.u-blox.com/sites/default/files/ZED-F9T_IntegrationManual_UBX-21040375.pdf)* or in the *[Zed-F9T interface description](https://content.u-blox.com/sites/default/files/ZED-F9T_InterfaceDescription_%28UBX-18053584%29.pdf?utm_content=UBX-18053584)*. These tiers include
 
 * Global settings: Includes settings common to all devices
     *  *apply_to_layers*: Can be RAM, BBR (battery backed RAM), or flash. Flash is persistent so be careful. You may be able to reset via *UBX-CFG-RST*. If you want to reset the BBR, you can tie the *RST* pin low as described in the [Zed-F9T Hookup Guide](https://learn.sparkfun.com/tutorials/gnss-timing-breakout---zed-f9t-qwiic-hookup-guide/all). BBR lasts for about a day.

@@ -9,14 +9,17 @@ following:
 - Discover all F9T devices on a network
 - Configure all F9T devices using a config file
 - Receive RTCM messages from a base station and forward them on to any receivers in the network
-- Log telemetry data coming from both base stations and receivers. This includes data like qerr, UTC timestamps,
-  and information about satellites in view
+- Log telemetry data coming from both base stations and receivers (if wanted). This includes data like qerr, UTC timestamps, and information about satellites in view. These data can also be logged locally.
 - Ping the devices so the F9T devices know if the headnode can talk with them
 """
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
+log = logging.getLogger("server")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
 import os
 import signal
 import time
@@ -72,6 +75,14 @@ def jlog(kind: str, device_id: str, alias: str = "", **payload) -> None:
 	rec = {"ts": int(time.time() * 1000), "kind": kind, "device_id": device_id, "alias": alias, **payload}
 	with open(LOG_PATH, "a", encoding="utf-8") as f:
 		f.write(json5.dumps(rec, separators=(",", ":")) + "\n")
+
+
+
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("-v", "--verbosity", type=int, default=2, help="0=errors, 1=warn, 2=info, 3=debug")
+    p.add_argument("--log-file", default="", help="optional file path")
+    return p.parse_args()
 
 
 # ----------------------------- hub (fanout) ---------------------------------
@@ -214,7 +225,7 @@ def decide_role_and_creds_for_device(man: dict, device_id: str) -> tuple[int, st
 # there are no F9P settings in here. It is used so irregularly that adding these settings to the global manifest
 # seemed extra. But, in principle, you could.
 async def cfg_from_manifest_for_device(man: dict, device_id: str, role_enum: int) -> tuple[list[str], list[dict]]:
-	"""Merge global → role → device; inject TMODE if device has position."""
+
 	role_str = "base" if role_enum == pb.Role.BASE else "receiver"
 	layers = (man.get("global", {}).get("apply_to_layers")) or ["RAM"]
 
@@ -408,6 +419,10 @@ class ControlServicer(rpc.ControlServicer):
 							# Config push (per device, per manifest version)
 							# Version is read from manifest (fallback to 1).
 							cfg_version = (man.get("global", {}) or {}).get("version") or 1
+							verify_layer = (man.get("global", {}) or {}).get("verify_layer") or "RAM"
+							print(f'verify layer set to {verify_layer}')
+							# Allows for per-device layer checking
+
 							key = (device_id, cfg_version)
 
 							# Only push if this device hasn't been pushed to at this version, and if there's no push already inflight for the same (device, version).
@@ -430,8 +445,9 @@ class ControlServicer(rpc.ControlServicer):
 											
 											# Send a CfgSet request to the GNSS receiver
 											await out_q.put(pb.ControlMsg(cfgset=pb.CfgSet(
-												items=cfgvals, apply_to_layers=layers, version=cfg_version
+												items=cfgvals, apply_to_layers=layers, verify_layer = verify_layer, version=cfg_version
 											)))
+
 											
 											# Yield so the TX task can run and move data out promptly
 											await asyncio.sleep(0)  # let tx run
@@ -645,6 +661,10 @@ async def serve(addr: str = "0.0.0.0:50051") -> None:
 if __name__ == "__main__":
 	# Entrypoint: Run the server’s main function and allow KeyboardInterrupt to exit cleanly.
 	try:
+		args = parse_args()
+		setup_logging(args.verbosity, args.log_file or None)
+		log = logging.getLogger("server")   # or "server"
+		log.info("starting up…")
 		asyncio.run(serve())
 	except KeyboardInterrupt:
 		pass
