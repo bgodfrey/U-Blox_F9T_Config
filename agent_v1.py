@@ -69,6 +69,8 @@ SAVE_TELEM_REMOTE = True          # send to server over Control.Pipe
 TELEM_DIR  = "./telem"  # or "/var/log/f9t_telem.jsonl"
 LOG_DIR = "./logging"
 os.makedirs(TELEM_DIR, exist_ok=True)
+os.makedirs(LOG_DIR, exist_ok=True)
+
 # one fixed timestamp for this agent run
 _START_TS  = datetime.now(timezone.utc)
 _START_STR = _START_TS.strftime("%Y%m%d_%H%M%SZ")
@@ -1459,6 +1461,7 @@ async def control_pipe(ser, ser_lock, uid_hex, fwver, protver, hwver, mount_toke
 			log.debug("control: loop ended")
 	except asyncio.CancelledError:
 		# The entire control_pipe task was cancelled by our supervisor.
+		print("control: shutting down...")
 		log.info("control: shutting down…")
 		return
 
@@ -1521,6 +1524,7 @@ async def main():
 		set_logging_alias(uid)
 		setup_logging(args.verbosity, log_file = _LOG_PATH or None, console = False)
 		#log = logging.getLogger("agent") 
+		print(f'starting up {uid}...')
 		log.info("starting up…")
 
 		while True:

@@ -13,6 +13,7 @@ following:
 - Ping the devices so the F9T devices know if the headnode can talk with them
 """
 from __future__ import annotations
+from datetime import datetime, timezone
 from logging_setup import setup_logging
 import argparse
 import asyncio
@@ -31,8 +32,15 @@ import caster_setup_pb2 as pb
 import caster_setup_pb2_grpc as rpc
 
 # ----------------------------- basic config ---------------------------------
-LOG_PATH = "./jsonl"  # directory; per-line JSONL records will be appended
-os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+_LOG_PATH_TELEM = "./jsonl"  # directory; per-line JSONL records will be appended
+os.makedirs(os.path.dirname(_LOG_PATH_TELEM), exist_ok=True)
+_LOG_PATH_LOGGING = "./logging"
+os.makedirs(os.path.dirname(_LOG_PATH_LOGGING), exist_ok=True)
+
+_START_TS  = datetime.now(timezone.utc)
+_START_STR = _START_TS.strftime("%Y%m%d_%H%M%SZ")
+_LOG_PATH_LOGGING = os.path.join(_LOG_PATH_LOGGING, f"SERVER_{_START_STR}.txt")
+
 
 
 # Setup for a connection is given by
@@ -72,7 +80,7 @@ def install_signal_handlers(stop_evt: asyncio.Event) -> None:
 # Append a compact JSONL record (easy to ingest/grep).
 def jlog(kind: str, device_id: str, alias: str = "", **payload) -> None:
 	rec = {"ts": int(time.time() * 1000), "kind": kind, "device_id": device_id, "alias": alias, **payload}
-	with open(LOG_PATH, "a", encoding="utf-8") as f:
+	with open(_LOG_PATH_TELEM, "a", encoding="utf-8") as f:
 		f.write(json5.dumps(rec, separators=(",", ":")) + "\n")
 
 
@@ -663,7 +671,7 @@ if __name__ == "__main__":
 	# Entrypoint: Run the server’s main function and allow KeyboardInterrupt to exit cleanly.
 	try:
 		args = parse_args()
-		setup_logging(args.verbosity, args.log_file or None)
+		setup_logging(args.verbosity, log_file = _LOG_PATH_LOGGING or None, console = False)
 		log = logging.getLogger("server")   # or "server"
 		log.info("starting up…")
 		asyncio.run(serve())
