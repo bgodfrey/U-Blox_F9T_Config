@@ -13,12 +13,11 @@ following:
 - Ping the devices so the F9T devices know if the headnode can talk with them
 """
 from __future__ import annotations
-
+from logging_setup import setup_logging
+import argparse
 import asyncio
 import contextlib
 import logging
-log = logging.getLogger("server")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 import os
 import signal
@@ -79,10 +78,10 @@ def jlog(kind: str, device_id: str, alias: str = "", **payload) -> None:
 
 
 def parse_args():
-    p = argparse.ArgumentParser()
-    p.add_argument("-v", "--verbosity", type=int, default=2, help="0=errors, 1=warn, 2=info, 3=debug")
-    p.add_argument("--log-file", default="", help="optional file path")
-    return p.parse_args()
+	p = argparse.ArgumentParser()
+	p.add_argument("-v", "--verbosity", type=int, default=2, help="0=errors, 1=warn, 2=info, 3=debug")
+	p.add_argument("--log-file", default="", help="optional file path")
+	return p.parse_args()
 
 
 # ----------------------------- hub (fanout) ---------------------------------
@@ -106,7 +105,7 @@ class Hub:
 		self.subs.get(mount, set()).discard(q)
 
 	async def publish(self, mount: str, frame: bytes) -> None:
-		print(f"[hub] mount={mount} -> {len(self.subs.get(mount, []))} subs, frame len={len(frame)}")
+		log.debug("[hub] mount=%s -> %d subs, frame len=%d", mount, len(self.subs.get(mount, [])), len(frame))
 		for q in list(self.subs.get(mount, set())):
 			try:
 				q.put_nowait(frame)
@@ -209,7 +208,7 @@ def decide_role_and_creds_for_device(man: dict, device_id: str) -> tuple[int, st
 		raise ValueError(f"device {dev_key} has no valid role ('base'|'receiver')")
 
 	role_enum = pb.Role.BASE if role_str == "base" else pb.Role.RECEIVER
-	print(f'Role enum: {role_enum}')
+	log.info("Role enum: %s", role_enum)
 	if role_enum == pb.Role.BASE:
 		mount = DEFAULT_POLICY["publish_mount"]
 		token = DEFAULT_POLICY.get("publish_token", "")
@@ -274,7 +273,7 @@ class CasterServicer(rpc.CasterServicer):
 	# Base publish 
 	async def Publish(self, request_iterator, context):
 		# Logs that the handler is active and initializes a running counter of RTCM frames (frames). This counter is used only to report back in the final ACK.        
-		print("[server] Publish: handler started")
+		log.info("[server] Publish: handler started")
 		frames = 0
 		current_mount = None  # remember mount from the OPEN
 		try:
@@ -283,7 +282,7 @@ class CasterServicer(rpc.CasterServicer):
 				if m.HasField("open"):
 					# First message
 					current_mount = (m.open.mount or "").strip()
-					print(f"[server] Publish: OPEN mount={m.open.mount} label={m.open.label}")
+					log.info("[server] Publish: OPEN mount=%s label=%s", m.open.mount, m.open.label)
 					# You can validate token here if desired.
 
 				# RTCM frame message; increment frames and display log messages    
@@ -294,27 +293,27 @@ class CasterServicer(rpc.CasterServicer):
 					# Fanout is optional here; wire to Hub if you want server-side relay
 					# await self.hub.publish(mount=m.open.mount, frame=m.frame.data)
 					if (frames % 100) == 0:
-						print(f"[server] Publish: frames={frames}")
+						log.info("[server] Publish: frames=%d", frames)
 				else:
-					print("[server] Publish: unknown oneof; ignoring")
+					log.warning("[server] Publish: unknown oneof; ignoring")
 			# client half-closed: return a single ack
 			# Client is no longer sending message
-			print(f"[server] Publish: client closed, ack frames={frames}")
+			log.info("[server] Publish: client closed, ack frames=%d", frames)
 			return pb.PublishAck(frames=frames)
 		# Error handling
 		except asyncio.CancelledError:
-			print("[server] Publish: cancelled")
+			log.info("[server] Publish: cancelled")
 			raise
 		except grpc.aio.AioRpcError as e:
-			print(f"[server] Publish: rpc error {e.code().name} - {e.details()}")
+			log.warning("[server] Publish: rpc error %s - %s", e.code().name, e.details())
 			return pb.PublishAck(frames=frames)
 		except Exception as e:
-			print(f"[server] Publish: exception {type(e).__name__}: {e}")
+			log.error("[server] Publish: exception %s: %s", type(e).__name__, e)
 			return pb.PublishAck(frames=frames)
 
 	# Receiver subscribe
 	async def Subscribe(self, request, context):
-		print(f"Creating a subscribe queue for mount={request.mount!r} ...")		
+		log.info("Creating a subscribe queue for mount=%r ...", request.mount)		
 		q = self.hub.attach(request.mount)
 		try:
 			while True:
@@ -331,7 +330,7 @@ class ControlServicer(rpc.ControlServicer):
 	"""Control plane: hello/ack, config push, ping, telemetry."""
 
 	async def Pipe(self, request_iterator, context):
-		print("[server] Control.Pipe: opened")
+		log.info("[server] Control.Pipe: opened")
 		# Create a queue with some back pressure to prevent a possible memory leak (too many RTCM) messages being produced / the headnode is bogged down for some reason
 		out_q: asyncio.Queue = asyncio.Queue(maxsize=128)
 		alias = ""
@@ -385,7 +384,7 @@ class ControlServicer(rpc.ControlServicer):
 							h = m.hello
 							# Normalize device_id (upper-case, no surrounding whitespace); used as dict key
 							device_id = (h.device_id or "").strip().upper()
-							print(f"[server] Control.Pipe: HELLO {device_id}")
+							log.info("[server] Control.Pipe: HELLO %s", device_id)
 							
 							# Update a global "last seen" map (ms since epoch) for observability/health checks
 							LAST_SEEN[device_id] = time.time()*1000 	
@@ -420,7 +419,7 @@ class ControlServicer(rpc.ControlServicer):
 							# Version is read from manifest (fallback to 1).
 							cfg_version = (man.get("global", {}) or {}).get("version") or 1
 							verify_layer = (man.get("global", {}) or {}).get("verify_layer") or "RAM"
-							print(f'verify layer set to {verify_layer}')
+							log.debug("verify_layer set to %s", verify_layer)
 							# Allows for per-device layer checking
 
 							key = (device_id, cfg_version)
@@ -454,7 +453,7 @@ class ControlServicer(rpc.ControlServicer):
 										
 										# Mark success for this device/version so we don't re-push
 										PUSHED_CFG[device_id] = cfg_version
-										print(f"[server] Control.Pipe: pushed cfg v{cfg_version} to {device_id}")
+										log.info("[server] Control.Pipe: pushed cfg v%s to %s", cfg_version, device_id)
 									except Exception as e:
 										# Send failure notification back to the agent/operator via an ApplyResult
 										await out_q.put(pb.ControlMsg(result=pb.ApplyResult(
@@ -470,7 +469,7 @@ class ControlServicer(rpc.ControlServicer):
 						elif m.HasField("result"):
 							# --- RESULT: reporting outcome of a prior command (e.g., cfg apply) ---
 							r = m.result
-							print(f"[server] Control.Pipe: result {r.name} ok={r.ok} err={r.error!r}")
+							log.info("[server] Control.Pipe: result %s ok=%s err=%r", r.name, r.ok, r.error)
 
 						elif m.HasField("telem"):
 							# --- TELEMETRY: status/health snapshot from agent/GNSS ---
@@ -507,15 +506,15 @@ class ControlServicer(rpc.ControlServicer):
 
 					except Exception as e:
 						# Per-message guard: one bad payload shouldn't tear down the entire stream.
-						print(f"[server] Control.Pipe: per-msg err: {e}")
+						log.warning("[server] Control.Pipe: per-msg err: %s", e)
 						continue
 
 			except asyncio.CancelledError:
 			# Stream/task was cancelled (e.g., server shutdown or client aborted)
-				print("[server] Control.Pipe: rx cancelled")
+				log.info("[server] Control.Pipe: rx cancelled")
 			finally:
 			 # The client half-closed its send side or the loop is exiting for another reason: signal the TX task by placing a sentinel (None) so it can finish cleanly.
-				print("[server] Control.Pipe: rx ended (client half-closed)")
+				log.info("[server] Control.Pipe: rx ended (client half-closed)")
 				await out_q.put(None)  # sentinel for tx()
 
 		"""
@@ -576,20 +575,20 @@ class ControlServicer(rpc.ControlServicer):
 
 			with contextlib.suppress(Exception):
 				rx_task.cancel(); await rx_task
-			print("[server] Control.Pipe: closed")
+			log.info("[server] Control.Pipe: closed")
 
 			# If the session ended uncleanly (no recent pings), clear PUSHED_CFG so the next hello will get config again.
 			if device_id:
 				# Milliseconds since we last saw any message tagged with this device_id
 				age = int(time.time() * 1000) - LAST_SEEN[device_id]
-				print(f'age since last discovery {age} ms')
+				log.debug("age since last discovery %d ms", age)
 				
 				# If the age exceeds twice the heartbeat period, consider the connection stale. Clearing the PUSHED_CFG entry forces a re-push next time this device connects.
 
 				if age > 2 * HB_PERIOD_S * 1000:
 					removed = PUSHED_CFG.pop(device_id, None)
 					if removed is not None:
-						print(f"[server] Control.Pipe: ping stale ({age} ms) → clearing PUSHED_CFG[{device_id}]")
+						log.info("[server] Control.Pipe: ping stale (%d ms) → clearing PUSHED_CFG[%s]", age, device_id)
 
 
 # ------------------------------ server boot ---------------------------------
@@ -629,6 +628,7 @@ async def serve(addr: str = "0.0.0.0:50051") -> None:
 	# Bind to the requested address/port (plaintext for now)
 	server.add_insecure_port(addr)
 	print("listening on", addr)
+	log.info("listening on %s", addr)
 	
 	# Start accepting RPCs
 	await server.start()
@@ -647,6 +647,7 @@ async def serve(addr: str = "0.0.0.0:50051") -> None:
 	if stop_task in done:
 		# External shutdown requested (Ctrl+C / SIGTERM)
 		print("shutdown requested, stopping gRPC...")
+		log.info("shutdown requested, stopping gRPC…")
 		# Unblock any subscribers waiting on Hub queues; this helps active Subscribe RPCs finish.
 		await hub.shutdown()
 	
