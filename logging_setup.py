@@ -16,13 +16,18 @@ def setup_logging(verbosity: int = 2, log_file: Optional[str] = None) -> None:
 							datefmt="%H:%M:%S")
 
 	ch = logging.StreamHandler(sys.stdout)
-	ch.setLevel(lvl); ch.setFormatter(fmt)
+	ch.setLevel(lvl)
+	ch.setFormatter(fmt)
 	root.addHandler(ch)
 
 	if log_file:
 		os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
 		fh = logging.FileHandler(log_file, encoding="utf-8")
-		fh.setLevel(lvl); fh.setFormatter(fmt)
+		fh.setLevel(lvl)
+		fh.setFormatter(fmt)
+		for handler in list(logger.handlers):
+			if isinstance(handler, root.StreamHandler):
+			root.removeHandler(handler)
 		root.addHandler(fh)
 
 	if lvl != logging.DEBUG:
