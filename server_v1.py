@@ -21,6 +21,7 @@ import contextlib
 import logging
 
 import os
+import shutil
 import signal
 import time
 from pathlib import Path
@@ -34,12 +35,12 @@ import caster_setup_pb2_grpc as rpc
 # ----------------------------- basic config ---------------------------------
 _LOG_PATH_TELEM = "./jsonl"  # directory; per-line JSONL records will be appended
 os.makedirs(os.path.dirname(_LOG_PATH_TELEM), exist_ok=True)
-_LOG_PATH_LOGGING = "./logging"
-os.makedirs(os.path.dirname(_LOG_PATH_LOGGING), exist_ok=True)
+_LOG_PATH_LOGGING_DIR = "./logging"
+os.makedirs(os.path.dirname(_LOG_PATH_LOGGING_DIR), exist_ok=True)
 
 _START_TS  = datetime.now(timezone.utc)
 _START_STR = _START_TS.strftime("%Y%m%d_%H%M%SZ")
-_LOG_PATH_LOGGING = os.path.join(_LOG_PATH_LOGGING, f"SERVER_{_START_STR}.txt")
+_LOG_PATH_LOGGING = os.path.join(_LOG_PATH_LOGGING_DIR, f"SERVER_{_START_STR}.txt")
 
 
 
@@ -87,8 +88,10 @@ def jlog(kind: str, device_id: str, alias: str = "", **payload) -> None:
 
 def parse_args():
 	p = argparse.ArgumentParser()
-	p.add_argument("-v", "--verbosity", type=int, default=2, help="0=errors, 1=warn, 2=info, 3=debug")
+	p.add_argument("--config", default = None, help = "optional path to config file")
+	p.add_argument("--ip", default = "0.0.0.0:50051", help = "IP address to bind to default is 0.0.0.0:50051")
 	p.add_argument("--log-file", default="", help="optional file path")
+	p.add_argument("-v", "--verbosity", type=int, default=2, help="0=errors, 1=warn, 2=info, 3=debug")
 	return p.parse_args()
 
 
@@ -674,6 +677,16 @@ if __name__ == "__main__":
 		setup_logging(args.verbosity, log_file = _LOG_PATH_LOGGING or None, console = False)
 		log = logging.getLogger("server")   # or "server"
 		log.info("starting up…")
-		asyncio.run(serve())
+		if args.config:
+			DEFAULT_POLICY['manifest'] = args.config
+			log.info(f"set config file to {args.config}")
+		try:
+			dest_config = os.path.join(_LOG_PATH_LOGGING_DIR, f"config_{_START_STR}.json5")
+			print(_LOG_PATH_LOGGING_DIR)
+			shutil.copyfile(DEFAULT_POLICY['manifest'], dest_config)
+			log.info(f"file '{DEFAULT_POLICY['manifest']}' copied to '{dest_config}' successfully.")
+		except FileNotFoundError:
+			log.error(f"[server] source file '{DEFAULT_POLICY['manifest']}' not found.")
+		asyncio.run(serve(args.ip))
 	except KeyboardInterrupt:
 		pass

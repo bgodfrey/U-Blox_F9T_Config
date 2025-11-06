@@ -52,8 +52,8 @@ import pyubx2.ubxtypes_configdb as cdb
 from typing import Optional, Tuple, Dict
 
 # --- Configuration & constants ----------------------------------------------
-CTRL_ADDR = "localhost:50051"     # Control service address (bidirectional)
-CAST_ADDR = "localhost:50051"     # Caster service address (publish/subscribe)
+_CTRL_ADDR = "localhost:50051"     # Control service address (bidirectional)
+_CAST_ADDR = "localhost:50051"     # Caster service address (publish/subscribe)
 
 HEX10 = re.compile(r"[0-9A-F]{10}$")
 PRINT_RTCM_IDS = True              # Print RTCM message IDs as they pass
@@ -999,7 +999,7 @@ async def publish_loop(ser, ser_lock, mount, token, rtcm_q=None):
 	try:
 		# Create a channel with keepalive so the server can detect dead peers and vice-versa.
 		async with grpc.aio.insecure_channel(
-			CAST_ADDR,
+			_CAST_ADDR,
 			options=[("grpc.keepalive_time_ms", 20000), ("grpc.keepalive_timeout_ms", 5000)],
 		) as ch:
 			stub = rpc.CasterStub(ch)
@@ -1121,7 +1121,7 @@ async def subscribe_loop(ser, ser_lock, mount, token):
 
 	try:
 		async with grpc.aio.insecure_channel(
-			CAST_ADDR,
+			_CAST_ADDR,
 			options=[("grpc.keepalive_time_ms", 20000),
 					 ("grpc.keepalive_timeout_ms", 5000)],
 		) as ch:
@@ -1219,7 +1219,7 @@ async def control_pipe(ser, ser_lock, uid_hex, fwver, protver, hwver, mount_toke
 	try:
 		 # Open a gRPC channel to the Control service with keepalives so both ends can detect dead peers (NAT, link flap, etc.) promptly.
 		async with grpc.aio.insecure_channel(
-			CTRL_ADDR,
+			_CTRL_ADDR,
 			options=[
 				("grpc.keepalive_time_ms", 20000),
 				("grpc.keepalive_timeout_ms", 5000),
@@ -1471,9 +1471,11 @@ async def control_pipe(ser, ser_lock, uid_hex, fwver, protver, hwver, mount_toke
 
 def parse_args():
 	p = argparse.ArgumentParser()
-	p.add_argument("-v", "--verbosity", type=int, default=2, help="0=errors, 1=warn, 2=info, 3=debug")
+	p.add_argument("--cast_addr", default = None, help = "caster service address (publish/subscribe)")
+	p.add_argument("--ctrl_addr", default = None, help = "control service address (bidirectional)")
 	p.add_argument("--log-file", default="", help="optional file path")
 	p.add_argument("--port", default = None, help = "optional port useful if multiple devices on a single computer")
+	p.add_argument("-v", "--verbosity", type=int, default=2, help="0=errors, 1=warn, 2=info, 3=debug")
 	return p.parse_args()
 
 """
@@ -1512,20 +1514,40 @@ Entry point: discover device, open control pipe, and manage lifetime.
 • On error: logs and retries after a short delay.
 """
 async def main():
-	global _LOG_PATH
+	global _LOG_PATH, _CAST_ADDR, _CTRL_ADDR
 	stop = asyncio.Event()
 	install_signal_handlers(stop)
 	try:
 		args = parse_args()
-		
+
+
 		# Discover device and identity (optionally use provided port)
-	
+		
 		port, uid = discover_f9x(port = args.port)
 		set_logging_alias(uid)
 		setup_logging(args.verbosity, log_file = _LOG_PATH or None, console = False)
 		#log = logging.getLogger("agent") 
 		print(f'starting up {uid}...')
 		log.info("starting up…")
+
+		# Run through the four cases to set ctrl/cast addr; default to "0.0.0.0:50051"
+		if args.ctrl_addr and not(args.cast_addr):
+			_CTRL_ADDR = args.ctrl_addr
+			_CAST_ADDR = _CTRL_ADDR
+			log.info(f'[agent] no cast address entered defaulting to control address')
+
+		elif args.cast_addr and not(args.ctrl_addr):
+			_CAST_ADDR = args.cast_addr
+			_CTRL_ADDR = _CAST_ADDR
+			log.info(f'[agent] no control address entered defaulting to cast address')
+
+		elif args.ctrl_addr and args.cast_addr:
+			log.info(f'[agent] control and cast addresses entered')
+			_CAST_ADDR = args.cast_addr    # Caster service address (publish/subscribe)
+			_CTRL_ADDR = args.ctrl_addr
+		
+		log.info(f'[agent] cast address {_CAST_ADDR}')
+		log.info(f'[agent] ctrl address {_CTRL_ADDR}')
 
 		while True:
 			# Discover device and identity (optionally use provided port)

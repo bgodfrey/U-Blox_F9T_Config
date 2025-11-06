@@ -148,20 +148,20 @@ The configuration file is, by default, given in *manifest_f9t.json5*. It defines
     ```
     This script will also give you some other information (output from polling *UBX-MON-VER*) about the device including the following:
         
-        * uniqid: Unique 5-byte hardware ID of the device (output as hex)
-        * model: Model of the device
-        * fwver: Firmware version
-        * protver: Protocol version
-        * hwver: Hardware version
-        * extensions: Some subset of the following:
+    * uniqid: Unique 5-byte hardware ID of the device (output as hex)
+    * model: Model of the device
+    * fwver: Firmware version
+    * protver: Protocol version
+    * hwver: Hardware version
+    * extensions: Some subset of the following:
             
-            1. ROM BASE: Underlying firmware version in ROM
-            2. FWVER: Firmware version (TIM implies Time Sync)
-            3. PROTVER: Protocol version 
-            4. MOD: Model
-            5. Supported major GNSS
-            6. Supported augmentation systems
-            7. Unknown; my guess is that this is unsupported constellations
+        1. ROM BASE: Underlying firmware version in ROM
+        2. FWVER: Firmware version (TIM implies Time Sync)
+        3. PROTVER: Protocol version 
+        4. MOD: Model
+        5. Supported major GNSS
+        6. Supported augmentation systems
+        7. Unknown; my guess is that this is unsupported constellations
     
     * Devices are also designated by an alias, which gives the name of the site. This is nice so have more than a hex string to identify the sites by. 
     * Position is used to configure the position of the device. This actually corresponds to a set of registers, but it's nicer to just input coordinates and have the configuration script set the associated registers. This position can be determined however you like, but PANOSETI uses a separate Zed-F9P to record position to high accuracy.
@@ -169,9 +169,7 @@ The configuration file is, by default, given in *manifest_f9t.json5*. It defines
     * Antenna information also isn't used for anything except for notes that can be referenced later. 
 
 
-
-
-## How to Run
+## Run Instructions
 
 * Install requirements
 ```bash
@@ -192,3 +190,48 @@ python server_v1.py
 ```bash
 python agent_v1.py
 ```
+
+### Run options
+
+#### Server
+```bash
+optional arguments:
+  -h, --help            show this help message and exit
+  --config CONFIG       optional path to config file
+  --ip IP               IP address to bind to default is 0.0.0.0:50051
+  --log-file LOG_FILE   optional file path
+  -v VERBOSITY, --verbosity VERBOSITY
+                        0=errors, 1=warn, 2=info, 3=debug
+```
+Notes
+
+* The default log location is `./logging`
+* The default name is SERVER_{UTC time}
+* The default configuration file is `manifest_f9t.json5`. This gets copied into the log directory with the start date/time so you know all your settings for a run.
+* You can also get help by typing in `python server_v1.py --help`
+
+
+#### Agent
+```bash
+usage: agent_v1.py [-h] [-v VERBOSITY] [--log-file LOG_FILE] [--port PORT]
+
+optional arguments:
+optional arguments:
+  -h, --help            show this help message and exit
+  --cast_addr CAST_ADDR
+                        caster service address (publish/subscribe)
+  --ctrl_addr CTRL_ADDR
+                        control service address (bidirectional)
+  --log-file LOG_FILE   optional file path
+  --port PORT           optional port useful if multiple devices on a single computer
+  -v VERBOSITY, --verbosity VERBOSITY
+                        0=errors, 1=warn, 2=info, 3=debug
+```
+
+Notes
+    
+* The default log location is the current working directory
+* The default name is {Name of dome}-{last 4 digits of device ID}_{UTC time}
+* You can also get help by typing in `python agent_v1.py --help`
+* The default bind address of the control and cast service is *0.0.0.0:50051"
+* If you don't add a control/cast service address it will set itself to the address of the cast/control service (assuming that it is set)
