@@ -37,12 +37,13 @@ from __future__ import annotations
 # --- Standard / third‑party imports -----------------------------------------
 from datetime import datetime, timezone
 from grpc.aio import AioRpcError
+from logging_setup import setup_logging
 from serial import Serial
 # Requires:
 from pyubx2.exceptions import UBXMessageError, UBXParseError, UBXStreamError, UBXTypeError
 from pyubx2 import POLL, SET, UBX_CONFIG_DATABASE, UBXReader, UBXMessage, UBX_PROTOCOL
 from pyubx2 import UBX_CONFIG_DATABASE as CFGDB
-import asyncio, contextlib, glob, io, json5, os, re, signal, struct, sys, time
+import argparse, asyncio, contextlib, glob, io, json5, logging, os, re, signal, struct, sys, time
 import grpc, serial
 import caster_setup_pb2 as pb
 import caster_setup_pb2_grpc as rpc
@@ -65,11 +66,14 @@ UBX_PROTO_RTCM3 = 0x20
 SAVE_TELEM_LOCAL  = True          # write JSONL locally
 SAVE_TELEM_REMOTE = True          # send to server over Control.Pipe
 TELEM_DIR  = "./telem"  # or "/var/log/f9t_telem.jsonl"
+LOG_DIR = "./logging"
 os.makedirs(TELEM_DIR, exist_ok=True)
 # one fixed timestamp for this agent run
 _START_TS  = datetime.now(timezone.utc)
 _START_STR = _START_TS.strftime("%Y%m%d_%H%M%SZ")
+
 _TELEM_PATH = os.path.join(TELEM_DIR, f"UNKNOWN_{_START_STR}.jsonl")
+_LOG_PATH = os.path.join(LOG_DIR, f"UNKNOWN_{_START_STR}.txt")
 
 # --- Global scope variables -------------------------
 _CFGMAP: Dict[str, Tuple[int, str]] = {}            # Config DB map: KEY -> (ID, TYPE)
@@ -1461,6 +1465,40 @@ async def control_pipe(ser, ser_lock, uid_hex, fwver, protver, hwver, mount_toke
 # Main
 # ----------------------------------------------------------------------------
 
+def parse_args():
+	p = argparse.ArgumentParser()
+	p.add_argument("-v", "--verbosity", type=int, default=2, help="0=errors, 1=warn, 2=info, 3=debug")
+	p.add_argument("--log-file", default="", help="optional file path")
+	p.add_argument("--port", default = None, help = "optional port useful if multiple devices on a single computer")
+	return p.parse_args()
+
+"""
+Set (or rename to) a telemetry filename that includes alias + start time.
+Safe to call multiple times; no-op if it already matches target.
+"""
+def set_logging_alias(device_id: str = "") -> None:
+	"""
+	Set (or rename to) a telemetry filename that includes an alias and start time.
+	Safe to call multiple times
+	"""
+	global _LOG_PATH
+	
+	suffix = f"{device_id[:]}" if device_id else "_"
+
+	new_path = os.path.join(LOG_DIR, f"{suffix}_{_START_STR}.txt")
+	if new_path == _LOG_PATH:
+		return
+
+	# If we’ve already written to the old file, rename it. If not, this is just setting the initial path.
+	try:
+		if os.path.exists(_LOG_PATH):
+			os.replace(_LOG_PATH, new_path)
+	except Exception:
+		# If rename fails, leave the old path; next write will still succeed.
+		return
+
+	_LOG_PATH = new_path
+
 """
 Entry point: discover device, open control pipe, and manage lifetime.
 
@@ -1470,17 +1508,26 @@ Entry point: discover device, open control pipe, and manage lifetime.
 • On error: logs and retries after a short delay.
 """
 async def main():
+	global _LOG_PATH
 	stop = asyncio.Event()
 	install_signal_handlers(stop)
-	while True:
-		try:
+	try:
+		args = parse_args()
+		
+		# Discover device and identity (optionally use provided port)
+	
+		port, uid = discover_f9x(port = args.port)
+		set_logging_alias(uid)
+		setup_logging(args.verbosity, log_file = _LOG_PATH or None, console = False)
+		log = logging.getLogger("agent") 
+		log.info("starting up…")
+
+		while True:
 			# Discover device and identity (optionally use provided port)
-			if len(sys.argv) > 1:
-				port, uid = discover_f9x(port = sys.argv[1])
-			else:
-				port, uid = discover_f9x()
-
-
+			#if len(sys.argv) > 1:
+			#	port, uid = discover_f9x(port = sys.argv[1])
+			#else:
+			#	port, uid = discover_f9x()
 			# --- Read MON-VER and normalize (TIM/PROT pretty mapping) ---
 			try:
 				ver = normalize_f9t_versions(read_mon_ver(port, 115200))
@@ -1492,9 +1539,7 @@ async def main():
 			ser = serial.Serial(port, 115200, timeout=0.2, write_timeout=0.5)
 			ser_lock = asyncio.Lock()
 			creds = {"mount": None, "token": None, "role": None}
-			ctrl_task = asyncio.create_task(
-				control_pipe(ser, ser_lock, uid, ver['fwver'], ver['protver'], ver['hwver'], creds)
-			)
+			ctrl_task = asyncio.create_task(control_pipe(ser, ser_lock, uid, ver['fwver'], ver['protver'], ver['hwver'], creds))
 
 			# Wait until either we have role+creds or a stop signal arrives
 			while not stop.is_set() and not (creds["mount"] and creds["token"] and creds["role"]):
@@ -1516,9 +1561,9 @@ async def main():
 			with contextlib.suppress(Exception):
 				ser.close()
 			await asyncio.sleep(2.0)
-		except Exception as e:
-			print("agent error:", e)
-			await asyncio.sleep(2.0)
+	except Exception as e:
+		print("agent error:", e)
+		await asyncio.sleep(2.0)
 
 
 if __name__ == "__main__":
