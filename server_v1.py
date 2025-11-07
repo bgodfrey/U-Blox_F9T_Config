@@ -82,6 +82,7 @@ def install_signal_handlers(stop_evt: asyncio.Event) -> None:
 def jlog(kind: str, device_id: str, alias: str = "", **payload) -> None:
 	rec = {"ts": int(time.time() * 1000), "kind": kind, "device_id": device_id, "alias": alias, **payload}
 	with open(_LOG_PATH_TELEM, "a", encoding="utf-8") as f:
+		# Remember that you will have to load this using JSON5 instead of JSON (if you using Python)
 		f.write(json5.dumps(rec, separators=(",", ":")) + "\n")
 
 

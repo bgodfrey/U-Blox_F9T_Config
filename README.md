@@ -206,6 +206,7 @@ optional arguments:
 Notes
 
 * The default log location is `./logging`
+* The default telemetry location is `./telem`. Note that in order to load the json objects in each line of the jsonl file, that you will need to use the json5 package.
 * The default name is SERVER_{UTC time}
 * The default configuration file is `manifest_f9t.json5`. This gets copied into the log directory with the start date/time so you know all your settings for a run.
 * You can also get help by typing in `python server_v1.py --help`
