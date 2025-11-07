@@ -171,7 +171,7 @@ The configuration file is, by default, given in *manifest_f9t.json5*. It defines
 
 ## Run Instructions
 
-* Install requirements
+* Install requirements (assumes that you're using Python 3.9 although it seems to work up through Python 3.14)
 ```bash
 pip install -r  requirements.txt
 ``` 
