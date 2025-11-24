@@ -10,23 +10,25 @@ This repo contains scripts for configuring a network of U-Blox F9T receivers int
 1. Multi-band support for bands of interest (GPS, Galileo, and BeiDou) although GLONASS is also supported.
 2. Precise timing quoted at 5 ns absolute and 2.5 ns differential 1σ timing accuracy
 
-    a. Sends out quantization (*qerr* corrections that give corrections to the current 1 pps tick)
-3. Ability to use one F9T as a base station to send real time correction message (RTCM) correction data to improve accuracy
+    a. Sends out quantization (*qerr* corrections that give corrections to the current 1 pps clock)
+3. Ability to use one F9T as a base station to send real time correction message (RTCM) data to improve accuracy
 4. Two time pulse outputs for 1 pps / 10 MHz outputs (configurable up to 25 MHz)
 5. Can be operated from a PC's USB port (low power)
 
 
 PANOSETI is using these as an alternative to more precise fiber-optic based timing systems (e.g. White Rabbit based on Synchronous Ethernet and the IEEE 1588 Precision Time Protocol - see [Wikipedia](https://en.wikipedia.org/wiki/White_Rabbit_Project) for more information) where ultra-precise timing requirements are not required for science and where fiber optic trenching is cost-prohibitive (time-to-science, labor, cost). We use this as a proof-of-concept, *good enough* alternative rather than a de facto replacement.
 
+This repo relies heavily off of the [pyubx2](https://github.com/semuconsulting/pyubx2) library for reading/writing UBX messages. There is also [U-Center](https://www.u-blox.com/en/product/u-center), which provides a graphical environment for programming U-Blox, GNSS receivers.
+
 ## Configuration for PANOSETI
-PANOSETI consists of a headnode and a bunch of data acquisition (DAQ) nodes. Each telescope/dome has a single DAQ node. Data are collected by each DAQ node and then aggregated onto the headnode at the end of a data acquisition period so as to minimize computational burden on each DAQ node. (This could lead to bottlenecks and ultimately packet loss, which needs to be avoided). This operational principle of minimizing compute on the DAQ nodes has informed the code setup for the GNSS receivers as well.  
+PANOSETI consists of a headnode and a number of data acquisition (DAQ) nodes. Each telescope/dome has a single DAQ node. Data are collected by each DAQ node and then aggregated onto the headnode at the end of a data acquisition period so as to minimize computational burden on each DAQ node. (This could lead to bottlenecks and ultimately packet loss, which needs to be avoided). This operational principle of minimizing compute on the DAQ nodes has informed the code setup for the GNSS receivers as well.  
 
 ![Basic Deisgn Setup](docs/img/F9T_BasicCodeSetup.png 'Basic Design Setup')
 
 *Basic setup of the code where the headnode serves as an intermediary between a base and some number of receivers.*
 
 
-The picture above describes the basic idea of how the receivers are configured. Each DAQ node can be configured as either a *receiver* or a *base*. Each base pushes RTCM corrections back to the headnode, which is then responsible for forwarding them to any receiver in the network. Designation of base/receiver is decided in a config file (see [Overview of Configuration File](#overview-of-configuration-file)). This config file also contains all the registers needed to configure any client (F9T) in the network. In this way, the network is agnostic to which client is a base/receiver and it can also handle multiple bases/receivers depending on the need of the user. It's also simple to add more devices to the network just be adding to the config file.
+The picture above describes the basic idea of how the receivers are configured. Each DAQ node can be configured as either a *receiver* or a *base*. Each base pushes RTCM corrections back to the headnode, which is then responsible for forwarding them to any receiver in the network. Designation of base/receiver is decided in a config file (see [Overview of Configuration File](#overview-of-configuration-file)). This config file also contains all the registers needed to configure any client (F9T) in the network. In this way, the network is agnostic to which client is a base/receiver, and it can also handle multiple bases/receivers depending on the need of the user. Doing this, also makes it simple to add more devices to the network, which is done by adding to the config file.
 
 ## Overview of Setup
 This system connects U-Blox F9T GNSS receivers to a central control and data distribution server. It provides configuration, telemetry, and RTCM data streaming over gRPC.
@@ -48,7 +50,7 @@ The server exposes two gRPC services:
 
     * DeviceHello: Sent by the agent when it first boots up so that the server knows about its existence
     * HelloAck: Sent by the server to the agent - defines the role of the agent as well as what base its associated with and a convenient alias. Right now this alias doubles as the name of the site *(e.g. Gattini) 
-    Telemetrty: telemetry data including qerr
+    Telemetry: telemetry data including qerr
     * Ping: Periodically sent by the server to the agent so the agent knows that it can still contact the server. Longterm this should be bi-directional - namely, a ping request by the server elicits a response from the agent. The big picture plan is that this can be used to periodically get metadata that can be plotted / viewed in Grafana.
     * CfgSet: Sent by the server to the agent - configuration keys / settings for each agent
     * ApplyResult: Confirmation from the agent that a configuration key was set
@@ -161,12 +163,12 @@ The configuration file is, by default, given in *manifest_f9t.json5*. It defines
         4. MOD: Model
         5. Supported major GNSS
         6. Supported augmentation systems
-        7. Unknown; my guess is that this is unsupported constellations
+        7. Unknown; my guess is that this gives unsupported constellations
     
     * Devices are also designated by an alias, which gives the name of the site. This is nice so have more than a hex string to identify the sites by. 
     * Position is used to configure the position of the device. This actually corresponds to a set of registers, but it's nicer to just input coordinates and have the configuration script set the associated registers. This position can be determined however you like, but PANOSETI uses a separate Zed-F9P to record position to high accuracy.
     * There is a port and baud setting in the manifest right now, which isn't used. You can either have the port be auto-discovered or add it when you start the agent script.
-    * Antenna information also isn't used for anything except for notes that can be referenced later. 
+    * Antenna information also isn't used for anything except for notes that can be referenced later. The configuration script is saved when the devices are configured so that the settings can be referenced later.
 
 
 ## Run Instructions
