@@ -91,7 +91,7 @@
   devices: {
     "1CA16A41BC": {
       alias: "GATTINI",
-      role: "base",
+      role: "receiver",
       serial: { port: "/dev/ttyACM0", baud: 115200 },
       position: { format: "LLH", lat_deg: 33.3534828, lon_deg: -116.8624633, height_m: 1665.026, acc_m: 0.02 },
       antenna: {
@@ -102,7 +102,7 @@
         notes: "Pole mount"
       },
       config: [
-        { key: "CFG_TP_ANT_CABLEDELAY", value: 50 }
+        { key: "CFG_TP_ANT_CABLEDELAY", value: 93 }
       ]
     },
 
@@ -117,7 +117,27 @@
         cable_length_m: 15,
         velocity_factor: 0.8,
         notes: "Dome mount"
-        }
+        },
+        config: [
+        { key: "CFG_TP_ANT_CABLEDELAY", value: 44}
+      ]
+      },
+
+    "5DA30A41BD": {
+      alias: "PTI",
+      role: "receiver",
+      serial: { port: "/dev/ttyACM0", baud: 115200 },
+      position: { format: "LLH", lat_deg: 33.3574696, lon_deg: -116.8641556, height_m: 1662.168, acc_m: 0.02 },
+      antenna: {
+        model: "A.120.A.101111",
+        serial: null,
+        cable_length_m: 15,
+        velocity_factor: 0.8,
+        notes: "Dome mount"
+        },
+        config: [
+        { key: "CFG_TP_ANT_CABLEDELAY", value: 44}
+      ]
       },
 
       "DBA55A41BF": {
@@ -134,5 +154,4 @@
         notes: "Test system"
       }  
     }
-  }
 }
