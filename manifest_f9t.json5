@@ -89,7 +89,7 @@
   },
 
   devices: {
-    "1CA16A41BC": {
+    "D92EAA4324": {
       alias: "GATTINI",
       role: "receiver",
       serial: { port: "/dev/ttyACM0", baud: 115200 },
