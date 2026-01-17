@@ -126,7 +126,7 @@
     "9D02FA41BC": {
       alias: "WINTERS",
       role: "base",
-      serial: { port: "/dev/ttyACM0", baud: 115200 },
+      serial: { port: "/dev/ttyACM1", baud: 115200 },
       position: { format: "LLH", lat_deg: 33.3569335, lon_deg: -116.866145, height_m: 1669.977, acc_m: 0.02 },
       antenna: {
         model: "A.120.A.101111",
@@ -142,7 +142,7 @@
 
     "5DA30A41BD": {
       alias: "PTI",
-      role: "receiver",
+      role: "base",
       serial: { port: "/dev/ttyACM0", baud: 115200 },
       position: { format: "LLH", lat_deg: 33.3574696, lon_deg: -116.8641556, height_m: 1662.168, acc_m: 0.02 },
       antenna: {
