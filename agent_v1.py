@@ -151,14 +151,14 @@ class TelemetryAgg:
 
 	The GNSS streams multiple UBX reports. We keep the latest values that are relevant to monitoring timing quality and sky conditions."""
 	__slots__ = (
-		"temp_c", "qerr_ps", "utc_ok", "num_vis", "num_used",
+		"temp_c", "qerr_ns", "utc_ok", "num_vis", "num_used",
 		"gps_used", "gal_used", "bds_used", "glo_used", "avg_cno", "pdop"
 	)
 
 	def __init__(self) -> None:
 		# Initialize with sane defaults; fields updated as UBX arrives.
 		self.temp_c = None      # Temperature of the chip (maybe can use as a proxy for enclosure temperature)
-		self.qerr_ps = None     # Qerr of the current clock tick in ps
+		self.qerr_ns = None     # Qerr of the current clock tick in ns
 		self.utc_ok = False     # Position dilution of
 		self.num_vis = 0        # Number of satellites visible
 		self.num_used = 0       # Number of satellites used in the navigation solution
@@ -178,24 +178,26 @@ class TelemetryAgg:
 
 		ident = getattr(msg, "identity", "")
 		if ident == "TIM-TP":
-			self.qerr_ps = getattr(msg, "qErr", None)
-			self.utc_ok = bool(getattr(msg, "utc", 0))
+			self.qerr_ns = getattr(msg, "qErr", None)
+			#self.utc_ok = bool(getattr(msg, "utc", 0))
 		elif ident == "MON-SYS":
 			tv = getattr(msg, "tempValue", None)
 			if tv is not None:
 				self.temp_c = float(tv)
 		elif ident == "NAV-SAT":
 			# Count visible/used sats and per‑constellation split; compute avg C/N0.
-			sats = getattr(msg, "sats", []) or []
-			self.num_vis = len(sats)
-			used = 0; cno_sum = 0.0
-			gps=gal=bds=glo=0
+			sats = getattr(msg, "group", []) or []
+			self.num_vis = int(getattr(msg, "numSvs", len(sats)) or len(sats))
+			used = 0
+			cno_sum = 0.0
+			gps = gal = bds = glo = 0
+			
 			for s in sats:
 				cno = getattr(s, "cno", 0.0) or 0.0
 				cno_sum += cno
-				if getattr(s, "flags", 0) & 0x08:  # bit indicates used in solution
+				int(getattr(s, "svUsed", 0) or 0):
 					used += 1
-					gid = getattr(s, "gnssId", 255)
+					gid = int(getattr(s, "gnssId", 255) or 255)
 					if gid == 0: gps += 1
 					elif gid == 2: gal += 1
 					elif gid == 3: bds += 1
@@ -206,9 +208,10 @@ class TelemetryAgg:
 		elif ident == "NAV-DOP":
 			pd = getattr(msg, "pDOP", None)
 			if pd is not None:
-				self.pdop = float(pd)
+				self.pdop = float(pd) * 0.01
 		elif ident == "NAV-TIMEUTC":
 			self.utc_ok = bool(getattr(msg, "validUTC", 0))
+
 
 
 # Stop any existing telemetry publisher and start exactly one new instance.
@@ -422,7 +425,7 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 			# --- snapshot current telemetry fields ---
 			unix_ms = int(time.time() * 1000)
 			temp_c  = float(getattr(agg, "temp_c", 0.0) or 0.0)
-			qerr_ps = int(getattr(agg, "qerr_ps", 0) or 0)
+			qerr_ns = int(getattr(agg, "qerr_ns", 0) or 0)
 			utc_ok  = bool(getattr(agg, "utc_ok", False))
 			num_vis  = int(getattr(agg, "num_vis", 0) or 0)
 			num_used = int(getattr(agg, "num_used", 0) or 0)
@@ -437,7 +440,7 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 			t = pb.Telemetry(
 				unix_ms=unix_ms,
 				temp_c=temp_c,
-				qerr_ns=qerr_ps // 1000,  # ps → ns
+				qerr_ns= qerr_ns,
 				utc_ok=utc_ok,
 				num_vis=num_vis, num_used=num_used,
 				gps_used=gps_used, gal_used=gal_used,
@@ -451,7 +454,7 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 					"ts": unix_ms,            # local write time (ms)
 					"unix_ms": unix_ms,       # device-reported epoch (ms)
 					"temp_c": temp_c,
-					"qerr_ns": qerr_ps // 1000,
+					"qerr_ns": qerr_ns,
 					"utc_ok": utc_ok,
 					"num_vis": num_vis, "num_used": num_used,
 					"gps_used": gps_used, "gal_used": gal_used,
@@ -462,15 +465,17 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 				await _append_jsonl(rec)
 
 			# remote publish (guarded + optional)
-			if SAVE_TELEM_REMOTE:
-				if not writer or not writer.is_open():
-					break
+			if SAVE_TELEM_REMOTE and writer and writer.is_open():
 				try:
-					ok = await writer.write(pb.ControlMsg(telem=t))
+					await writer.write(pb.ControlMsg(telem=t))
+				#if not writer or not writer.is_open():
+				#	break
+				#try:
+				#	ok = await writer.write(pb.ControlMsg(telem=t))
 				except (asyncio.InvalidStateError, grpc.aio.AioRpcError):
-					break
-				if not ok:
-					break
+					pass
+				#if not ok:
+				#	break
 
 			# cadence ~1 Hz with early-exit
 			try:
@@ -1037,7 +1042,7 @@ async def publish_loop(ser, ser_lock, mount, token, rtcm_q=None):
 					continue
 
 				# Ignore empty blobs (shouldn't happen).
-				if not frame:
+				if not frame or frame[:2] != b"\xb5\x62":
 					continue
 				
 				try:
