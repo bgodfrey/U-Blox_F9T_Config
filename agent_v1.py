@@ -192,7 +192,7 @@ class TelemetryAgg:
 			cno_sum = 0.0
 			gps = gal = bds = glo = 0
 			s0 = sats[0]
-			print(type(s0), s0)
+			log.info(str(type(s0)) + s0)
 			for s in sats:
 				cno = getattr(s, "cno", 0.0) or 0.0
 				cno_sum += cno
