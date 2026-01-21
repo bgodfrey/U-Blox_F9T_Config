@@ -195,7 +195,7 @@ class TelemetryAgg:
 			for s in sats:
 				cno = getattr(s, "cno", 0.0) or 0.0
 				cno_sum += cno
-				int(getattr(s, "svUsed", 0) or 0):
+				if int(getattr(s, "svUsed", 0) or 0):
 					used += 1
 					gid = int(getattr(s, "gnssId", 255) or 255)
 					if gid == 0: gps += 1
