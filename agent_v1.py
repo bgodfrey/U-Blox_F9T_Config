@@ -186,7 +186,7 @@ class TelemetryAgg:
 				self.temp_c = float(tv)
 		elif ident == "NAV-SAT":
 			# Count visible/used sats and per‑constellation split; compute avg C/N0.
-			sats = getattr(msg, "sats", []) or []
+			sats = getattr(msg, "numSvs", []) or []
 			self.num_vis = len(sats)
 			used = 0; cno_sum = 0.0
 			gps=gal=bds=glo=0
@@ -437,7 +437,7 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 			t = pb.Telemetry(
 				unix_ms=unix_ms,
 				temp_c=temp_c,
-				qerr_ns=qerr_ps // 1000,  # ps → ns
+				qerr_ns=round(qerr_ps / 1000, 3),  # ps → ns
 				utc_ok=utc_ok,
 				num_vis=num_vis, num_used=num_used,
 				gps_used=gps_used, gal_used=gal_used,
