@@ -29,7 +29,7 @@ Sentinel & shutdown convention
 • None is the only sentinel value used to signal consumers to stop. It is only placed in queues during full serial shutdown. Role switches do not touch the queues (to avoid poisoning them).
 
 • _shutdown_evt is set during whole‑agent shutdown; serial_demux_loop places
-  sentinels only in that case.
+	sentinels only in that case.
 """
 
 from __future__ import annotations
@@ -371,8 +371,13 @@ async def serial_demux_loop(ser, ser_lock, rtcm_q: asyncio.Queue, ubx_q: asyncio
 						if PRINT_UBX_SUMMARY:
 							log.debug("UBX %02X-%02X len=%dB", frame[2], frame[3], length)
 						print("about to put UBX", flush=True)
-						await ubx_q.put(frame)
-						print("put UBX ok", flush=True)
+						try:
+							ubx_q.put_nowait(frame)
+							print("put UBX ok", flush=True)
+						except asyncio.QueueFull:
+							# drop (telemetry is best-effort)
+							print("Queue full", flush=True)
+							pass
 						del rx[:total]
 						continue
 					else:
@@ -417,8 +422,8 @@ async def ubx_telemetry_loop(ubx_q: asyncio.Queue, agg: TelemetryAgg):
 
 '''
 	Periodically snapshot telemetry and:
-	  - send upstream over Control.Pipe (if SAVE_TELEM_REMOTE),
-	  - append locally as JSONL (if SAVE_TELEM_LOCAL).
+		- send upstream over Control.Pipe (if SAVE_TELEM_REMOTE),
+		- append locally as JSONL (if SAVE_TELEM_LOCAL).
 	Non-blocking: disk writes are offloaded via asyncio.to_thread.
 '''
 async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: asyncio.Event):
@@ -629,7 +634,7 @@ async def _valget_verify(ser, ser_lock, cfgData, layer: str = "RAM", timeout_per
 		# strings or others → string compare
 		return str(have) == str(want)
 
-    # --- map requested names ----	
+		# --- map requested names ----	
 	want_by_name = {}
 	want_names = []
 	for name, val in cfgData:
@@ -872,9 +877,9 @@ def discover_f9x(timeout=0.6, port: Optional[str] = None):
 """Ensure demux and telemetry pipelines are running before entering a role.
 
 Starts (or restarts if needed):
-  • serial_demux_loop (raw bytes → RTCM/UBX queues)
-  • ubx_telemetry_loop (UBX → aggregator)
-  • telem_publisher (aggregator → Control stream)
+	• serial_demux_loop (raw bytes → RTCM/UBX queues)
+	• ubx_telemetry_loop (UBX → aggregator)
+	• telem_publisher (aggregator → Control stream)
 """
 async def ensure_demux_started(ser, ser_lock, call):
 	global _rtcm_q, _ubx_q, _demux_task, _telem_task, _telem_pub_task, _serial_stop_evt, _telem_stop_evt
@@ -965,33 +970,33 @@ async def _ping_watchdog():
 Role = BASE: Push RTCM frames upstream to the server (Caster.Publish).
 
 High-level flow:
-  1) Open a gRPC channel and start a client-streaming Publish RPC.
-  2) Send a single OPEN message containing mount/token/label (acts like a handshake/metadata).
-  3) Repeatedly read RTCM frames from the demux queue (RTCM queue):
+	1) Open a gRPC channel and start a client-streaming Publish RPC.
+	2) Send a single OPEN message containing mount/token/label (acts like a handshake/metadata).
+	3) Repeatedly read RTCM frames from the demux queue (RTCM queue):
 		• If we see the sentinel (None), the upstream pipeline is shutting down → exit loop.
 		• Otherwise write each frame as a PublishMsg(frame=RtcmFrame(...)).
-  4) On orderly exit (closing=True), half-close the stream (done_writing) and await the server's
+	4) On orderly exit (closing=True), half-close the stream (done_writing) and await the server's
 	 final PublishAck that reports the total number of frames the server counted.
-  5) Robustness:
+	5) Robustness:
 		• Periodic timeout on queue get() keeps the loop cancellable.
 		• Separate exception paths annotate exit_reason for clear diagnosis.
 
 Parameters:
-  ser       : pyserial Serial (not used here; only for symmetry / future-proofing)
-  ser_lock  : asyncio.Lock to serialize serial access (not used here)
-  mount     : logical routing key for the RTCM stream (server-side fanout topic)
-  token     : optional authorization token for the caster
-  rtcm_q    : asyncio.Queue of bytes; if None, uses the module-global _rtcm_q
+	ser       : pyserial Serial (not used here; only for symmetry / future-proofing)
+	ser_lock  : asyncio.Lock to serialize serial access (not used here)
+	mount     : logical routing key for the RTCM stream (server-side fanout topic)
+	token     : optional authorization token for the caster
+	rtcm_q    : asyncio.Queue of bytes; if None, uses the module-global _rtcm_q
 
 Concurrency & backpressure:
-  - The demux task produces frames into rtcm_q.
-  - This loop consumes frames and writes to gRPC. If the network is slow:
-	  * call.write() awaits underlying flow control; this naturally throttles.
-	  * The queue’s maxsize on the producer side should be set to avoid unbounded memory growth.
+	- The demux task produces frames into rtcm_q.
+	- This loop consumes frames and writes to gRPC. If the network is slow:
+		* call.write() awaits underlying flow control; this naturally throttles.
+		* The queue’s maxsize on the producer side should be set to avoid unbounded memory growth.
 
 Shutdown conventions:
-  - The ONLY sentinel is None. Seeing None means: stop consuming (upstream is stopping).
-  - We set closing=True to indicate we should half-close and await server’s final acknowledgement.
+	- The ONLY sentinel is None. Seeing None means: stop consuming (upstream is stopping).
+	- We set closing=True to indicate we should half-close and await server’s final acknowledgement.
 """
 async def publish_loop(ser, ser_lock, mount, token, rtcm_q=None):
 	"""Role=BASE: stream RTCM frames from `_rtcm_q` to server via Caster.Publish."""
@@ -1089,24 +1094,24 @@ async def publish_loop(ser, ser_lock, mount, token, rtcm_q=None):
 Role = RECEIVER: pull RTCM frames from the server and write them to the GNSS serial port.
 
 High-level flow:
-  1) Open a gRPC channel and call the server-streaming Subscribe RPC with (mount, token).
-  2) For each received RtcmFrame, write its payload bytes to the GNSS device (USB/serial).
-  3) The loop ends when the server closes the stream or an exception/cancel occurs.
+	1) Open a gRPC channel and call the server-streaming Subscribe RPC with (mount, token).
+	2) For each received RtcmFrame, write its payload bytes to the GNSS device (USB/serial).
+	3) The loop ends when the server closes the stream or an exception/cancel occurs.
 
 Parameters:
-  ser      : pyserial Serial object connected to the GNSS receiver
-  ser_lock : asyncio.Lock protecting serial access (shared with other tasks)
-  mount    : routing key identifying which base-stream to subscribe to
-  token    : optional authorization token for the caster
+	ser      : pyserial Serial object connected to the GNSS receiver
+	ser_lock : asyncio.Lock protecting serial access (shared with other tasks)
+	mount    : routing key identifying which base-stream to subscribe to
+	token    : optional authorization token for the caster
 
 Concurrency & backpressure:
-  - This consumer writes directly to serial inside the serial lock to avoid interleaving
+	- This consumer writes directly to serial inside the serial lock to avoid interleaving
 	with configuration writes or any other serial access.
-  - If the serial port blocks, gRPC backpressure will apply naturally because we only
+	- If the serial port blocks, gRPC backpressure will apply naturally because we only
 	pull the next frame once we finish writing the prior one.
 
 Shutdown conventions:
-  - When the server ends the stream (normal or error), the asynchronous for loop breaks.
+	- When the server ends the stream (normal or error), the asynchronous for loop breaks.
 """
 
 
@@ -1116,10 +1121,10 @@ async def subscribe_loop(ser, ser_lock, mount, token):
 	Role = RECEIVER: pull RTCM frames from server and write them to the GNSS serial port.
 
 	Adds:
-	  • CRC24Q + length checks (defensive)
-	  • per-RTCM-ID histogram for quick visibility
-	  • periodic progress logging
-	  • graceful handling of stream/serial errors
+		• CRC24Q + length checks (defensive)
+		• per-RTCM-ID histogram for quick visibility
+		• periodic progress logging
+		• graceful handling of stream/serial errors
 	"""
 	log.info("subscribe: loop started")
 
@@ -1199,29 +1204,29 @@ async def subscribe_loop(ser, ser_lock, mount, token):
 	Maintain the Control (bidirectional) gRPC stream with the server and orchestrate the agent.
 
 	Responsibilities:
-	  • Open a bidirectional Control stream (rpc.Control/Pipe) and keep it alive with HTTP/2 keepalives.
-	  • Send a single HELLO (identity/version info) to the server.
-	  • Receive control messages:
-		  - ack: server assigns role + caster credentials → start demux + role task
-		  - cfgset: apply UBX VALSET keys (in batches) + (re)enable telemetry UBX messages
-		  - ping: refresh watchdog deadline (server heartbeat)
-		  - file_*: optional small file transfer (atomic write to /tmp/caster); possible way of sending non-urgent metadata
-	  • Periodically publish Telemetry (in a separate task) while the control stream is up.
-	  • Run a ping watchdog: if pings stop for too long, force reconfig next session and stop role.
-	  • Cleanly stop telemetry publisher + role task if the stream ends or errors.
+		• Open a bidirectional Control stream (rpc.Control/Pipe) and keep it alive with HTTP/2 keepalives.
+		• Send a single HELLO (identity/version info) to the server.
+		• Receive control messages:
+			- ack: server assigns role + caster credentials → start demux + role task
+			- cfgset: apply UBX VALSET keys (in batches) + (re)enable telemetry UBX messages
+			- ping: refresh watchdog deadline (server heartbeat)
+			- file_*: optional small file transfer (atomic write to /tmp/caster); possible way of sending non-urgent metadata
+		• Periodically publish Telemetry (in a separate task) while the control stream is up.
+		• Run a ping watchdog: if pings stop for too long, force reconfig next session and stop role.
+		• Cleanly stop telemetry publisher + role task if the stream ends or errors.
 
 	Parameters:
-	  ser, ser_lock     : pyserial Serial + asyncio.Lock protecting serial access
-	  uid_hex           : SEC-UNIQID (10 hex chars)
-	  fwver, protver    : parsed/normalized MON-VER info (e.g., "TIM 2.20", "29.20")
-	  hwver             : hardware version string
-	  mount_token_holder: Dictionary shared with outer scopes to expose {'mount','token','role'}
+		ser, ser_lock     : pyserial Serial + asyncio.Lock protecting serial access
+		uid_hex           : SEC-UNIQID (10 hex chars)
+		fwver, protver    : parsed/normalized MON-VER info (e.g., "TIM 2.20", "29.20")
+		hwver             : hardware version string
+		mount_token_holder: Dictionary shared with outer scopes to expose {'mount','token','role'}
 
 	Conventions:
-	  - Telemetry publisher is (re)started here; it reads UBX-derived fields from `_agg`.
-	  - Role task is started only after an acknolwedgement arrives (so we have mount/token/role).
-	  - _arm_ping_deadline() is called on HELLO and refreshed on each server ping.
-	  - On exit (cancel/error), watchdog and role are stopped, telemetry publisher is signaled.
+		- Telemetry publisher is (re)started here; it reads UBX-derived fields from `_agg`.
+		- Role task is started only after an acknolwedgement arrives (so we have mount/token/role).
+		- _arm_ping_deadline() is called on HELLO and refreshed on each server ping.
+		- On exit (cancel/error), watchdog and role are stopped, telemetry publisher is signaled.
 	"""
 async def control_pipe(ser, ser_lock, uid_hex, fwver, protver, hwver, mount_token_holder):
 	try:
@@ -1267,10 +1272,10 @@ async def control_pipe(ser, ser_lock, uid_hex, fwver, protver, hwver, mount_toke
 
 			"""
 			Apply a CfgSet atomically:
-			  • Toggle RTCM USB output based on role (base emits; rover mutes).
-			  • Translate VALSET items (CfgVal) to UBX config_set tuples and push in batches.
-			  • Enable the UBX messages needed by our telemetry aggregator (_agg).
-			  • Report success/failure back to server via ApplyResult.
+				• Toggle RTCM USB output based on role (base emits; rover mutes).
+				• Translate VALSET items (CfgVal) to UBX config_set tuples and push in batches.
+				• Enable the UBX messages needed by our telemetry aggregator (_agg).
+				• Report success/failure back to server via ApplyResult.
 			"""
 			async def apply_cfgset(cfgset: pb.CfgSet) -> bool:
 				global _last_cfg_version, _telem_stop_evt, _telem_pub_task
