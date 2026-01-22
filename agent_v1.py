@@ -1531,7 +1531,7 @@ async def main():
 		
 		port, uid = discover_f9x(port = args.port)
 		set_logging_alias(uid)
-		setup_logging(args.verbosity, log_file = _LOG_PATH or None, console = False)
+		setup_logging(args.verbosity, log_file = _LOG_PATH or None, console = True)
 		#log = logging.getLogger("agent") 
 		print(f'starting up {uid}...')
 		log.info("starting up…")
