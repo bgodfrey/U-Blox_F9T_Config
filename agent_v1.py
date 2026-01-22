@@ -68,6 +68,16 @@ SAVE_TELEM_LOCAL  = True          # write JSONL locally
 SAVE_TELEM_REMOTE = True          # send to server over Control.Pipe
 TELEM_DIR  = "./telem"  # or "/var/log/f9t_telem.jsonl"
 LOG_DIR = "./logging"
+
+TELEM_UBX = {
+		(0x0D, 0x01),  # TIM-TP
+		(0x01, 0x35),  # NAV-SAT
+		(0x01, 0x21),  # NAV-TIMEUTC
+		(0x01, 0x04),  # NAV-DOP   (or drop if you switch to NAV-PVT for PDOP)
+		(0x0A, 0x39),  # MON-SYS   <-- confirm this from your logs; adjust if needed
+		# (0x01, 0x07),  # NAV-PVT optional
+}
+
 os.makedirs(TELEM_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 
@@ -371,13 +381,18 @@ async def serial_demux_loop(ser, ser_lock, rtcm_q: asyncio.Queue, ubx_q: asyncio
 						if PRINT_UBX_SUMMARY:
 							log.debug("UBX %02X-%02X len=%dB", frame[2], frame[3], length)
 						log.debug("about to put UBX")
-						try:
-							ubx_q.put_nowait(frame)
-							log.debug("put UBX ok")
-						except asyncio.QueueFull:
-							# drop (telemetry is best-effort)
-							log.debug("Queue full")
-							pass
+						cls_id = (frame[2], frame[3])
+						if cls_id in TELEM_UBX:
+							try:
+								ubx_q.put_nowait(frame)
+								log.debug("put UBX ok")
+							except asyncio.QueueFull:
+								# drop (telemetry is best-effort)
+								log.debug("Queue full")
+								with contextlib.suppress(asyncio.QueueEmpty):
+									ubx_q.get_nowait()
+								with contextlib.suppress(asyncio.QueueFull):
+									ubx_q.put_nowait(frame)
 						del rx[:total]
 						continue
 					else:
