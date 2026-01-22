@@ -481,7 +481,7 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 			t = pb.Telemetry(
 				unix_ms=unix_ms,
 				temp_c=temp_c,
-				qerr_ns=round(qerr_ps / 1000, 3),  # ps → ns
+				qerr_ns=round(qerr_ps / 1000.0, 3),  # ps → ns
 				utc_ok=utc_ok,
 				num_vis=num_vis, num_used=num_used,
 				gps_used=gps_used, gal_used=gal_used,
@@ -495,12 +495,12 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 					"ts": unix_ms,            # local write time (ms)
 					"unix_ms": unix_ms,       # device-reported epoch (ms)
 					"temp_c": temp_c,
-					"qerr_ns": qerr_ps // 1000,
+					"qerr_ns": round(qerr_ps / 1000.0, 3),
 					"utc_ok": utc_ok,
 					"num_vis": num_vis, "num_used": num_used,
 					"gps_used": gps_used, "gal_used": gal_used,
 					"bds_used": bds_used, "glo_used": glo_used,
-					"avg_cno": avg_cno, "pdop": pdop,
+					"avg_cno": round(avg_cno, 4), "pdop": round(pdop, 4),
 				}
 				# fire-and-forget (don’t await if you want even looser coupling)
 				await _append_jsonl(rec)

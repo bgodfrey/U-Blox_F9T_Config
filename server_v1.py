@@ -33,13 +33,13 @@ import caster_setup_pb2 as pb
 import caster_setup_pb2_grpc as rpc
 
 # ----------------------------- basic config ---------------------------------
-_LOG_PATH_TELEM = "./jsonl"  # directory; per-line JSONL records will be appended
+_START_TS  = datetime.now(timezone.utc)
+_START_STR = _START_TS.strftime("%Y%m%d_%H%M%SZ")
+_LOG_PATH_TELEM = f"./telemetry_{_START_STR}.jsonl"  # directory; per-line JSONL records will be appended
 os.makedirs(os.path.dirname(_LOG_PATH_TELEM), exist_ok=True)
 _LOG_PATH_LOGGING_DIR = "./logging"
 os.makedirs(os.path.dirname(_LOG_PATH_LOGGING_DIR), exist_ok=True)
 
-_START_TS  = datetime.now(timezone.utc)
-_START_STR = _START_TS.strftime("%Y%m%d_%H%M%SZ")
 _LOG_PATH_LOGGING = os.path.join(_LOG_PATH_LOGGING_DIR, f"SERVER_{_START_STR}.txt")
 
 
@@ -627,12 +627,12 @@ async def serve(addr: str = "0.0.0.0:50051") -> None:
 	hub = Hub() # in-process fanout manager for RTCM frames
 	
 	# Configure gRPC AsyncIO server with keepalive settings suitable for long-lived streams.
-	server = grpc.aio.server(options=[
-		("grpc.keepalive_time_ms", 20000),  # send HTTP/2 PING every 20s
-		("grpc.keepalive_timeout_ms", 5000), # consider dead if no ACK in 5s
-		("grpc.keepalive_permit_without_calls", 1), # allow PINGs without active calls
-	])
-
+	#server = grpc.aio.server(options=[
+	#	("grpc.keepalive_time_ms", 20000),  # send HTTP/2 PING every 20s
+	#	("grpc.keepalive_timeout_ms", 5000), # consider dead if no ACK in 5s
+	#	("grpc.keepalive_permit_without_calls", 1), # allow PINGs without active calls
+	#])
+	server = grpc.aio.server()
 	rpc.add_CasterServicer_to_server(CasterServicer(hub), server)
 	rpc.add_ControlServicer_to_server(ControlServicer(), server)
 
