@@ -171,6 +171,7 @@ class TelemetryAgg:
 
 	#Turn bytes into stream and then returned the raw and parsed data
 	def feed_ubx(self, frame: bytes) -> None:
+		print("FEEDING UBX...")
 		try:
 			_, msg = UBXReader(io.BytesIO(frame)).read()
 		except Exception:
