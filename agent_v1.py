@@ -370,13 +370,13 @@ async def serial_demux_loop(ser, ser_lock, rtcm_q: asyncio.Queue, ubx_q: asyncio
 					if frame[-2] == ck_a and frame[-1] == ck_b:
 						if PRINT_UBX_SUMMARY:
 							log.debug("UBX %02X-%02X len=%dB", frame[2], frame[3], length)
-						log.debug("about to put UBX", flush=True)
+						log.debug("about to put UBX")
 						try:
 							ubx_q.put_nowait(frame)
-							log.debug("put UBX ok", flush=True)
+							log.debug("put UBX ok")
 						except asyncio.QueueFull:
 							# drop (telemetry is best-effort)
-							log.debug("Queue full", flush=True)
+							log.debug("Queue full")
 							pass
 						del rx[:total]
 						continue
