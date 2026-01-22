@@ -627,12 +627,12 @@ async def serve(addr: str = "0.0.0.0:50051") -> None:
 	hub = Hub() # in-process fanout manager for RTCM frames
 	
 	# Configure gRPC AsyncIO server with keepalive settings suitable for long-lived streams.
-	server = grpc.aio.server(options=[
-		("grpc.keepalive_time_ms", 20000),  # send HTTP/2 PING every 20s
-		("grpc.keepalive_timeout_ms", 5000), # consider dead if no ACK in 5s
-		("grpc.keepalive_permit_without_calls", 1), # allow PINGs without active calls
-	])
-
+	#server = grpc.aio.server(options=[
+	#	("grpc.keepalive_time_ms", 20000),  # send HTTP/2 PING every 20s
+	#	("grpc.keepalive_timeout_ms", 5000), # consider dead if no ACK in 5s
+	#	("grpc.keepalive_permit_without_calls", 1), # allow PINGs without active calls
+	#])
+	server = grpc.aio.server()
 	rpc.add_CasterServicer_to_server(CasterServicer(hub), server)
 	rpc.add_ControlServicer_to_server(ControlServicer(), server)
 
