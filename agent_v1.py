@@ -379,16 +379,16 @@ async def serial_demux_loop(ser, ser_lock, rtcm_q: asyncio.Queue, ubx_q: asyncio
 						if PRINT_UBX_SUMMARY:
 							log.debug("UBX %02X-%02X len=%dB", frame[2], frame[3], length)
 						cls_id = (frame[2], frame[3])
-						if cls_id in TELEM_UBX:
-							try:
+						#if cls_id in TELEM_UBX:
+						try:
+							ubx_q.put_nowait(frame)
+						except asyncio.QueueFull:
+							# drop (telemetry is best-effort)
+							log.debug("Queue full")
+							with contextlib.suppress(asyncio.QueueEmpty):
+								ubx_q.get_nowait()
+							with contextlib.suppress(asyncio.QueueFull):
 								ubx_q.put_nowait(frame)
-							except asyncio.QueueFull:
-								# drop (telemetry is best-effort)
-								log.debug("Queue full")
-								with contextlib.suppress(asyncio.QueueEmpty):
-									ubx_q.get_nowait()
-								with contextlib.suppress(asyncio.QueueFull):
-									ubx_q.put_nowait(frame)
 						del rx[:total]
 						continue
 					else:
