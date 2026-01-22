@@ -171,7 +171,6 @@ class TelemetryAgg:
 
 	#Turn bytes into stream and then returned the raw and parsed data
 	def feed_ubx(self, frame: bytes) -> None:
-		print("FEEDING UBX...")
 		try:
 			_, msg = UBXReader(io.BytesIO(frame)).read()
 		except Exception:
@@ -371,7 +370,9 @@ async def serial_demux_loop(ser, ser_lock, rtcm_q: asyncio.Queue, ubx_q: asyncio
 					if frame[-2] == ck_a and frame[-1] == ck_b:
 						if PRINT_UBX_SUMMARY:
 							log.debug("UBX %02X-%02X len=%dB", frame[2], frame[3], length)
+						print("about to put UBX", flush=True)
 						await ubx_q.put(frame)
+						print("put UBX ok", flush=True)
 						del rx[:total]
 						continue
 					else:
