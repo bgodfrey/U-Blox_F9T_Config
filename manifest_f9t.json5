@@ -107,7 +107,7 @@
     },
     "DBA55A41BF": {
       alias: "RAL",
-      role: "receiver",
+      role: "base",
       serial: { port: "/dev/ttyACM0", baud: 115200 },
       position: { format: "LLH", lat_deg: 33.3534828, lon_deg: -116.8624633, height_m: 1665.026, acc_m: 0.02 },
       antenna: {

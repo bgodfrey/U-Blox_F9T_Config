@@ -50,7 +50,7 @@ message HelloAck {
 message Telemetry {
   int64  unix_ms = 1;
   double temp_c  = 2;     // UBX-MON-SYS
-  int64  qerr_ns = 3;     // UBX-TIM-TP
+  float  qerr_ns = 3;     // UBX-TIM-TP
   bool   utc_ok  = 4;     // NAV-TIMEUTC.validUTC
 
   // --- satellite summary (1 Hz) ---
