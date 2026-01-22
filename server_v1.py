@@ -33,13 +33,13 @@ import caster_setup_pb2 as pb
 import caster_setup_pb2_grpc as rpc
 
 # ----------------------------- basic config ---------------------------------
-_LOG_PATH_TELEM = "./jsonl"  # directory; per-line JSONL records will be appended
+_START_TS  = datetime.now(timezone.utc)
+_START_STR = _START_TS.strftime("%Y%m%d_%H%M%SZ")
+_LOG_PATH_TELEM = f"./telemetry_{_START_STR}.jsonl"  # directory; per-line JSONL records will be appended
 os.makedirs(os.path.dirname(_LOG_PATH_TELEM), exist_ok=True)
 _LOG_PATH_LOGGING_DIR = "./logging"
 os.makedirs(os.path.dirname(_LOG_PATH_LOGGING_DIR), exist_ok=True)
 
-_START_TS  = datetime.now(timezone.utc)
-_START_STR = _START_TS.strftime("%Y%m%d_%H%M%SZ")
 _LOG_PATH_LOGGING = os.path.join(_LOG_PATH_LOGGING_DIR, f"SERVER_{_START_STR}.txt")
 
 
