@@ -186,6 +186,11 @@ class TelemetryAgg:
 				self.temp_c = float(tv)
 		elif ident == "NAV-SAT":
 			# Count visible/used sats and per‑constellation split; compute avg C/N0.
+			log.debug("NAV-SAT numSvs=%r group_type=%s group_len=%s flags_type=%s",
+          getattr(msg, "numSvs", None),
+          type(getattr(msg, "group", None)).__name__,
+          len(getattr(msg, "group", []) or []),
+          type(getattr((getattr(msg, "group", []) or [None])[0], "flags", 0)).__name__)
 			sats = getattr(msg, "numSvs", []) or []
 			self.num_vis = len(sats)
 			used = 0; cno_sum = 0.0
