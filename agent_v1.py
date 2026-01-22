@@ -201,8 +201,6 @@ class TelemetryAgg:
 			used = 0
 			cno_sum = 0.0
 			gps = gal = bds = glo = 0
-			s0 = sats[0]
-			print("NAV-SAT entry:", type(s0), s0)
 			for s in sats:
 				cno = getattr(s, "cno", 0.0) or 0.0
 				cno_sum += cno
