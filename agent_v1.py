@@ -242,10 +242,10 @@ class TelemetryAgg:
 
 					off += 12
 
-		self.num_vis = n
-		self.num_used = used
-		self.gps_used, self.gal_used, self.bds_used, self.glo_used = gps, gal, bds, glo
-		self.avg_cno = (cno_sum / n) if n else 0.0
+			self.num_vis = n
+			self.num_used = used
+			self.gps_used, self.gal_used, self.bds_used, self.glo_used = gps, gal, bds, glo
+			self.avg_cno = (cno_sum / n) if n else 0.0
 
 		elif ident == "NAV-DOP":
 			pd = getattr(msg, "pDOP", None)
