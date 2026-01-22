@@ -242,15 +242,15 @@ class TelemetryAgg:
 
 					off += 12
 
-		self.num_vis = n
-		self.num_used = used
-		self.gps_used, self.gal_used, self.bds_used, self.glo_used = gps, gal, bds, glo
-		self.avg_cno = (cno_sum / n) if n else 0.0
+			self.num_vis = n
+			self.num_used = used
+			self.gps_used, self.gal_used, self.bds_used, self.glo_used = gps, gal, bds, glo
+			self.avg_cno = (cno_sum / n) if n else 0.0
 
 		elif ident == "NAV-DOP":
 			pd = getattr(msg, "pDOP", None)
 			if pd is not None:
-				self.pdop = float(pd)
+				self.pdop = float(pd/100.)
 		elif ident == "NAV-TIMEUTC":
 			self.utc_ok = bool(getattr(msg, "validUTC", 0))
 
@@ -1042,10 +1042,9 @@ async def publish_loop(ser, ser_lock, mount, token, rtcm_q=None):
 	exit_reason = 'running'     # human-friendly reason printed on exit
 	try:
 		# Create a channel with keepalive so the server can detect dead peers and vice-versa.
-		async with grpc.aio.insecure_channel(
-			_CAST_ADDR,
-			options=[("grpc.keepalive_time_ms", 20000), ("grpc.keepalive_timeout_ms", 5000)],
-		) as ch:
+		
+		# options=[("grpc.keepalive_time_ms", 20000), ("grpc.keepalive_timeout_ms", 5000)], stop keepalive pings
+		async with grpc.aio.insecure_channel(_CAST_ADDR) as ch:
 			stub = rpc.CasterStub(ch)
 			
 			# 1) Open client-streaming RPC (note: this returns an async writer stream object)
