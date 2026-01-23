@@ -460,9 +460,11 @@ async def ubx_telemetry_loop(ubx_q: asyncio.Queue, agg: TelemetryAgg):
 	Non-blocking: disk writes are offloaded via asyncio.to_thread.
 '''
 async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: asyncio.Event):
-
+	period_warn = 0.2  # warn if loop takes > 1.2s excluding sleep
+	last = time.monotonic()
 	try:
 		while not stop_evt.is_set():
+			t_loop0 = time.monotonic()
 			# --- snapshot current telemetry fields ---
 			unix_ms = int(time.time() * 1000)
 			temp_c  = float(getattr(agg, "temp_c", 0.0) or 0.0)
@@ -491,6 +493,7 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 
 			# local JSONL record (flat & compact)
 			if SAVE_TELEM_LOCAL:
+				t0 = time.monotonic()
 				rec = {
 					"ts": unix_ms,            # local write time (ms)
 					"unix_ms": unix_ms,       # device-reported epoch (ms)
@@ -503,7 +506,6 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 					"avg_cno": round(avg_cno, 4), "pdop": round(pdop, 4),
 				}
 				# fire-and-forget (don’t await if you want even looser coupling)
-				t0 = time.monotonic()
 				await _append_jsonl(rec)
 				dt = time.monotonic() - t0
 				if dt > 0.05:
@@ -511,20 +513,31 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 
 			# remote publish (guarded + optional)
 			if SAVE_TELEM_REMOTE:
+				t0 = time.monotonic()
 				if not writer or not writer.is_open():
 					break
 				try:
 					ok = await writer.write(pb.ControlMsg(telem=t))
+					dt = time.monotonic() - t0
+					if dt > 0.05:
+						log.warning("[telem] grpc write took %.3fs", dt)
 				except (asyncio.InvalidStateError, grpc.aio.AioRpcError):
 					break
 				if not ok:
 					break
+
+			t_work = time.monotonic() - t_loop0
+			if t_work > 1.2:
+				log.warning("[telem] work section took %.3fs (expected <~0.2-0.5s)", t_work)
 
 			# cadence ~1 Hz with early-exit
 			try:
 				await asyncio.wait_for(stop_evt.wait(), timeout=1.0)
 			except asyncio.TimeoutError:
 				pass
+			dt_loop = time.monotonic() - last
+			last = time.monotonic()
+			log.debug("[telem] loop period %.3fs", dt_loop)
 	except asyncio.CancelledError:
 		pass
 
