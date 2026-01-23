@@ -27,7 +27,7 @@
 
       // ---- TP1: 1 Hz, 100 µs duty (0.01%), align to TOW ----
       { key: "CFG_TP_TP1_ENA",            value: 1 },
-      { key: "CFG_TP_FREQ_TP1",           value: 1 },
+      { key: "CFG_TP_FREQ_TP1",           value: 0 },     // Turn off unless locked
       { key: "CFG_TP_DUTY_TP1",           value: 0.01 },  // % (RATIO)
       { key: "CFG_TP_SYNC_GNSS_TP1",      value: 1 },
       { key: "CFG_TP_USE_LOCKED_TP1",     value: 1 },
