@@ -57,7 +57,7 @@ _CAST_ADDR = "localhost:50051"     # Caster service address (publish/subscribe)
 
 HEX10 = re.compile(r"[0-9A-F]{10}$")
 PRINT_RTCM_IDS = True              # Print RTCM message IDs as they pass
-PRINT_UBX_SUMMARY = False           # Print UBX class/id summaries
+PRINT_UBX_SUMMARY = True           # Print UBX class/id summaries
 
 # GNSS protocol bitmasks (for CFG‑PRT)
 UBX_PROTO_UBX   = 0x01
@@ -1623,7 +1623,7 @@ async def main():
 				ver = {"fwver": "", "protver": "", "hwver": ""}
 
 			# Open serial and spin up control plane
-			ser = serial.Serial(port, 115200, timeout=0.05, write_timeout=0.5)
+			ser = serial.Serial(port, 115200, timeout=0.005, write_timeout=0.5)
 			ser_lock = asyncio.Lock()
 			creds = {"mount": None, "token": None, "role": None}
 			ctrl_task = asyncio.create_task(control_pipe(ser, ser_lock, uid, ver['fwver'], ver['protver'], ver['hwver'], creds))
