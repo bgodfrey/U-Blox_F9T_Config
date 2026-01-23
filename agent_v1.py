@@ -503,7 +503,11 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 					"avg_cno": round(avg_cno, 4), "pdop": round(pdop, 4),
 				}
 				# fire-and-forget (don’t await if you want even looser coupling)
+				t0 = time.monotonic()
 				await _append_jsonl(rec)
+				dt = time.monotonic() - t0
+				if dt > 0.05:
+					log.warning("[telem] append_jsonl took %.3fs", dt)
 
 			# remote publish (guarded + optional)
 			if SAVE_TELEM_REMOTE:
@@ -529,7 +533,7 @@ def _sanitize(name: str, fallback: str = "UNKNOWN") -> str:
 	s = re.sub(r"[^A-Za-z0-9._-]+", "_", (name or "").strip())
 	return s or fallback
 
-"""
+"""t0 = time.monotonic()
 Set (or rename to) a telemetry filename that includes alias + start time.
 Safe to call multiple times; no-op if it already matches target.
 """
