@@ -490,7 +490,7 @@ class ControlServicer(rpc.ControlServicer):
 							rec = {
 								"unix_ms": int(getattr(t, "unix_ms", 0)),
 								"temp_c": float(getattr(t, "temp_c", 0.0)),
-								"qerr_ns": int(getattr(t, "qerr_ns", 0)),
+								"qerr_ns": round(float(getattr(t, "qerr_ns", 0)),3),
 								"utc_ok": bool(getattr(t, "utc_ok", False)),
 								"num_vis": int(getattr(t, "num_vis", 0)),
 								"num_used": int(getattr(t, "num_used", 0)),
@@ -498,8 +498,8 @@ class ControlServicer(rpc.ControlServicer):
 								"gal_used": int(getattr(t, "gal_used", 0)),
 								"bds_used": int(getattr(t, "bds_used", 0)),
 								"glo_used": int(getattr(t, "glo_used", 0)),
-								"avg_cno": float(getattr(t, "avg_cno", 0.0)),
-								"pdop": float(getattr(t, "pdop", 0.0)),
+								"avg_cno": round(float(getattr(t, "avg_cno", 0.0)),4),
+								"pdop": round(float(getattr(t, "pdop", 0.0)),4),
 							}
 							
 							# Update in-memory cache and append a JSONL log row (if we know which device)
