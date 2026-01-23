@@ -533,7 +533,7 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 			t_sleep0 = time.monotonic()
 			# cadence ~1 Hz with early-exit
 			try:
-				await asyncio.wait_for(stop_evt.wait(), timeout=0.999 - (t_sleep0 - t_loop0))
+				await asyncio.wait_for(stop_evt.wait(), timeout=0.997 - (t_sleep0 - t_loop0))
 			except asyncio.TimeoutError:
 				pass
 			#t_sleep = time.monotonic() - t_sleep0
