@@ -1163,11 +1163,8 @@ async def subscribe_loop(ser, ser_lock, mount, token):
 	id_hist = Counter()
 
 	try:
-		async with grpc.aio.insecure_channel(
-			_CAST_ADDR,
-			options=[("grpc.keepalive_time_ms", 20000),
-					 ("grpc.keepalive_timeout_ms", 5000)],
-		) as ch:
+		# options=[("grpc.keepalive_time_ms", 20000), ("grpc.keepalive_timeout_ms", 5000)],
+		async with grpc.aio.insecure_channel(_CAST_ADDR) as ch:
 			stub = rpc.CasterStub(ch)
 			req = pb.SubscribeRequest(mount=mount, token=token, label="f9t-agent")
 
