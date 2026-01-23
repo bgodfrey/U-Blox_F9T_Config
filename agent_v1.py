@@ -530,11 +530,14 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 			if t_work > 1.2:
 				log.warning("[telem] work section took %.3fs (expected <~0.2-0.5s)", t_work)
 
+			t_sleep0 = time.monotonic()
 			# cadence ~1 Hz with early-exit
 			try:
 				await asyncio.wait_for(stop_evt.wait(), timeout=1.0)
 			except asyncio.TimeoutError:
 				pass
+			t_sleep = time.monotonic() - t_sleep0
+			log.warning("[telem] sleep section took %.3fs", t_sleep)
 			dt_loop = time.monotonic() - last
 			last = time.monotonic()
 			log.debug("[telem] loop period %.3fs", dt_loop)
