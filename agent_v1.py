@@ -57,7 +57,7 @@ _CAST_ADDR = "localhost:50051"     # Caster service address (publish/subscribe)
 
 HEX10 = re.compile(r"[0-9A-F]{10}$")
 PRINT_RTCM_IDS = True              # Print RTCM message IDs as they pass
-PRINT_UBX_SUMMARY = True           # Print UBX class/id summaries
+PRINT_UBX_SUMMARY = False           # Print UBX class/id summaries
 
 # GNSS protocol bitmasks (for CFG‑PRT)
 UBX_PROTO_UBX   = 0x01
