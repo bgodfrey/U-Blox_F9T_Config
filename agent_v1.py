@@ -1623,7 +1623,7 @@ async def main():
 				ver = {"fwver": "", "protver": "", "hwver": ""}
 
 			# Open serial and spin up control plane
-			ser = serial.Serial(port, 115200, timeout=0.2, write_timeout=0.5)
+			ser = serial.Serial(port, 115200, timeout=0.05, write_timeout=0.5)
 			ser_lock = asyncio.Lock()
 			creds = {"mount": None, "token": None, "role": None}
 			ctrl_task = asyncio.create_task(control_pipe(ser, ser_lock, uid, ver['fwver'], ver['protver'], ver['hwver'], creds))
