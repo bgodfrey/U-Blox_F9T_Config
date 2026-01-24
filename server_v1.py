@@ -686,8 +686,8 @@ if __name__ == "__main__":
 			DEFAULT_POLICY['manifest'] = args.config
 			log.info(f"set config file to {args.config}")
 		try:
-			dest_config = os.path.join(_LOG_PATH_LOGGING, f"config_{_START_STR}.json5")
-			print(_LOG_PATH_LOGGING)
+			dest_config = os.path.join(LOGGING_DIR, f"config_{_START_STR}.json5")
+			print(LOGGING_DIR)
 			shutil.copyfile(DEFAULT_POLICY['manifest'], dest_config)
 			log.info(f"file '{DEFAULT_POLICY['manifest']}' copied to '{dest_config}' successfully.")
 		except FileNotFoundError:
