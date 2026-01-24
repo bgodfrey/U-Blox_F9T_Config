@@ -1,0 +1,484 @@
+--- agent_v1.py
++++ agent_v1.py
+@@ -7,6 +7,8 @@
+ import caster_setup_pb2 as pb
+ import caster_setup_pb2_grpc as rpc
+ import pyubx2.ubxtypes_configdb as cdb
++import logging
++log = logging.getLogger("agent")
+ 
+ 
+ _RTCM_SENTINEL = object()
+@@ -145,7 +147,7 @@
+ 	def close(self):
+-		#print("[agent] CallWriter.close() called (control) — this should NOT be called")
++		#log.debug("[agent] CallWriter.close() called (control) — this should NOT be called")
+ 		self._open = False
+ 
+ 	async def write(self, msg: pb.ControlMsg) -> bool:
+@@ -158,7 +160,7 @@
+ 		except (asyncio.InvalidStateError, grpc.aio.AioRpcError) as e:
+ 			self._open = False
+ 			# Write failed or call closed; caller should stop using this writer.
+-			print(f"[agent] control write failed: {getattr(e,'code',lambda:None)() if hasattr(e,'code') else ''} {getattr(e,'details',lambda:None)() if hasattr(e,'details') else ''}")
++			log.warning(f"[agent] control write failed: {getattr(e,'code',lambda:None)() if hasattr(e,'code') else ''} {getattr(e,'details',lambda:None)() if hasattr(e,'details') else ''}")
+ 			return False
+ 
+ 
+@@ -238,7 +240,7 @@
+ 	want = {k: v for k, v in cfgData}
+ 	want_names = [k for k, _ in cfgData]
+ 
+-	print("[verify] polling CFG-MSG USB rates for RTCM")
++	log.info("[verify] polling CFG-MSG USB rates for RTCM")
+ 	for typ in (1005, 1077, 1087, 1097, 1127, 1230, 4072):
+ 		k = f"CFG_MSGOUT_RTCM_3X_TYPE{typ}_USB"
+ 		rate = int(have_by_name.get(k, 0))
+-		print(f"[verify] RTCM{typ} USB rate={rate}")
++		log.info(f"[verify] RTCM{typ} USB rate={rate}")
+ 
+ 
+ 
+@@ -293,7 +295,7 @@
+ 			await asyncio.sleep(2.0)
+ 			dl = _ping_deadline
+ 			if dl and time.monotonic() > dl:
+-				print("[agent] ping watchdog: server silent → forcing reconfig next session")
++				log.info("[agent] ping watchdog: server silent → forcing reconfig next session")
+ 				_last_cfg_version = None
+ 				await stop_role_task()
+ 				return
+@@ -454,7 +456,7 @@
+ 				async with ser_lock:
+ 					data = ser.read(1)
+ 			except (serial.SerialException, serial.SerialTimeoutException, OSError, ValueError) as e:
+-				print(f"[demux] serial read error: {e}")
++				log.warning(f"[demux] serial read error: {e}")
+ 				await asyncio.sleep(0.25)
+ 				continue
+ 
+@@ -477,9 +479,9 @@
+ 						if PRINT_RTCM_IDS:
+ 							try:
+ 								# Remove 3-byte CRC for ID parsing convenience
+-								print(f"RTCM {_rtcm_id(frame[3:-3])} len={L}B", flush=True)
++								log.debug(f"RTCM {_rtcm_id(frame[3:-3])} len={L}B")
+ 							except Exception:
+-								print(f"RTCM len={L}B", flush=True)
++								log.debug(f"RTCM len={L}B")
+ 						await rtcm_q.put(bytes(frame))
+ 						continue
+ 
+@@ -497,7 +499,7 @@
+ 					# UBX
+ 					length = frame[4] | (frame[5] << 8)
+ 					if PRINT_UBX_SUMMARY:
+-						print(f"UBX {frame[2]:02X}-{frame[3]:02X} len={length}B", flush=True)
++						log.debug(f"UBX {frame[2]:02X}-{frame[3]:02X} len={length}B")
+ 					await ubx_q.put(bytes(frame))
+ 					continue
+ 
+@@ -579,37 +581,37 @@
+ 	return ok
+ 
+ async def stop_role_task():
+-	print('Stopping role task...')
++	log.info('Stopping role task...')
+ 	t = _role.get("task")
+ 	if t and not t.done():
+-		print('Canceling the task')
++		log.debug('Canceling the task')
+ 		t.cancel()
+ 		with contextlib.suppress(asyncio.CancelledError):
+ 			await t
+-	print('Updating role...')
++	log.debug('Updating role...')
+ 	_role.update(task=None, name=None)
+-	print('Role updated...')
++	log.debug('Role updated...')
+ 
+ async def start_role_task(role_enum: int, ser, ser_lock, mount: str, token: str, *, rtcm_q=None):
+ 	if role_enum == pb.Role.BASE:
+ 		_role["task"] = asyncio.create_task(publish_loop(ser, ser_lock, mount, token, rtcm_q=rtcm_q))
+ 		_role["name"] = "BASE"
+ 	elif role_enum == pb.Role.RECEIVER:
+ 		_role["task"] = asyncio.create_task(subscribe_loop(ser, ser_lock, mount, token))
+ 		_role["name"] = "RECEIVER"
+ 	else:
+ 		_role["task"] = None
+ 		_role["name"] = "UNSPECIFIED"
+-		print("Role unspecified; not starting publish/subscribe.")
++		log.warning("Role unspecified; not starting publish/subscribe.")
+ 		return
+-	print(f"Set role to {_role['name']} (enum={pb.Role.Name(role_enum)})")
++	log.info(f"Set role to {_role['name']} (enum={pb.Role.Name(role_enum)})")
+ 
+ def hexdump(buf: bytes, width: int = 16) -> str:
+ 	return " ".join(f"{b:02X}" for b in buf)
+ 
+ def _log_rtcm(direction: str, buf: bytes):
+ 	try:
+ 		L = ((buf[1] & 0x03) << 8) | buf[2]
+ 		msg = _rtcm_id(buf[3:])
+ 		crc = int.from_bytes(buf[3+L:3+L+3], 'big')
+ 		ok  = (_crc24q(buf[:3+L]) == crc)
+ 		peek = hexdump(buf[: min(len(buf), 20)])
+-		print(f"[{ts}] {direction} RTCM msg={msg}{kind_str}{stn_str} len={L} crc={'ok' if ok else 'BAD'} peek={peek}")
++		log.info(f"[{ts}] {direction} RTCM msg={msg}{kind_str}{stn_str} len={L} crc={'ok' if ok else 'BAD'} peek={peek}")
+ 	except Exception:
+ 		pass
+ 
+@@ -879,7 +881,7 @@
+ 						uid_hex = f"{uid:010X}"
+ 					else:
+ 						uid_hex = bytes(uid).hex().upper()
+-					print(uid_hex)
++					log.debug(uid_hex)
+ 					return dev, uid_hex
+ 			except Exception:
+ 				continue
+@@ -909,7 +911,7 @@
+ 				device_id=uid_hex, model="ZED-F9T",
+ 				fwver=fwver, protver=protver, hwver=hwver,
+ 				label="f9t-agent"
+ 			)))
+-			print('Sent hello')
++			log.info('Sent hello')
+ 
+ 			# Start/refresh ping watchdog
+ 			_arm_ping_deadline()
+@@ -924,19 +926,19 @@
+ 				"""Apply a CfgSet from the server using UBX VALSET and message-rate CFGs."""  # noqa: E501
+ 				global _last_cfg_version, _telem_stop_evt, _telem_pub_task
+ 				if _last_cfg_version == cfgset.version:
+-					print(f"[cfgset] version {cfgset.version} already applied; skipping")
++					log.info(f"[cfgset] version {cfgset.version} already applied; skipping")
+ 					if _call_writer and _call_writer.is_open():
+ 						await _call_writer.write(pb.ControlMsg(result=pb.ApplyResult(name="CfgSet", ok=True, error="")))
+ 					return True
+ 				async with _cfg_apply_lock:
+ 					if _last_cfg_version == cfgset.version:
+-						print(f"[cfgset] version {cfgset.version} already applied (post-lock); skipping")
++						log.info(f"[cfgset] version {cfgset.version} already applied (post-lock); skipping")
+ 						if _call_writer and _call_writer.is_open():
+ 							await _call_writer.write(pb.ControlMsg(result=pb.ApplyResult(name="CfgSet", ok=True, error="")))
+ 						return True
+ 					ok, err = True, ""
+ 					try:
+-						print(f"[cfgset] v={cfgset.version} (VALSET via config_set)")
++						log.info(f"[cfgset] v={cfgset.version} (VALSET via config_set)")
+ 						role_enum = mount_token_holder.get("role")
+ 						is_base   = (role_enum == pb.Role.BASE)
+ 						# Enable/disable RTCM over USB based on role (agent side visibility)
+@@ -969,13 +971,13 @@
+ 							k = cv.key.strip().upper().replace("-", "_")
+ 							cfgData.append((k, v))
+ 
+-						print(f"[cfgset] applying {len(cfgData)} keys via config_set (RAM only)")
++						log.info(f"[cfgset] applying {len(cfgData)} keys via config_set (RAM only)")
+ 
+ 						# Apply in small batches to avoid write buffer overflows
+ 						CHUNK = 30
+ 						applied = 0
+ 						for i in range(0, len(cfgData), CHUNK):
+ 							batch = cfgData[i:i+CHUNK]
+ 							try:
+ 								vs = UBXMessage.config_set(layers=1, transaction=0, cfgData=batch)
+ 								async with ser_lock:
+ 									ser.write(vs.serialize()); ser.flush()
+ 								applied += len(batch)
+ 								await asyncio.sleep(0.1)  # let device breathe
+ 							except Exception as e:
+-								print(f"[valset] batch {i//CHUNK} failed: {e}")
++								log.warning(f"[valset] batch {i//CHUNK} failed: {e}")
+-						print(f"[valset] applied {applied}/{len(cfgData)} items via config_set")
++						log.info(f"[valset] applied {applied}/{len(cfgData)} items via config_set")
+ 
+ 						# Ensure UBX messages needed for telemetry are enabled
+ 						await _cfg_msg_usb_rate_ubx(ser, ser_lock, 0x0D, 0x01, 1)  # TIM-TP
+ 						await _cfg_msg_usb_rate_ubx(ser, ser_lock, 0x0A, 0x39, 1)  # MON-SYS
+ 						await _cfg_msg_usb_rate_ubx(ser, ser_lock, 0x01, 0x35, 1)  # NAV-SAT
+ 						await _cfg_msg_usb_rate_ubx(ser, ser_lock, 0x01, 0x04, 1)  # NAV-DOP
+ 					except Exception as e:
+ 						ok, err = False, str(e)
+-						print(f"[cfgset] error applying config: {e}")
++						log.warning(f"[cfgset] error applying config: {e}")
+ 					# Report result to server
+ 					if _call_writer and _call_writer.is_open():
+ 						await _call_writer.write(pb.ControlMsg(result=pb.ApplyResult(name="CfgSet", ok=ok, error=("" if ok else err))))
+@@ -1031,11 +1033,11 @@
+ 			try:
+ 				async for m in call:
+ 					which = m.WhichOneof("msg")
+-					print("[agent] control recv:", which)
++					log.debug("[agent] control recv:", which)
+ 					if m.HasField("ack"):
+ 						# Server assigns role + creds (mount/token); start data plane.
+ 						role_enum = m.ack.role
+-						print("Received ack")
+-						print(f"The role is {pb.Role.Name(role_enum)}")
++						log.info("Received ack")
++						log.info(f"The role is {pb.Role.Name(role_enum)}")
+ 						mount_token_holder["mount"] = m.ack.mount
+ 						mount_token_holder["token"] = m.ack.token
+ 						mount_token_holder["role"]  = role_enum
+@@ -1047,27 +1049,27 @@
+ 						await ensure_demux_started(ser, ser_lock, call)
+ 						await start_role_task(role_enum, ser, ser_lock, m.ack.mount, m.ack.token, rtcm_q=_rtcm_q)
+ 					elif m.HasField("cfgset"):
+-						print("Configuring device")
++						log.info("Configuring device")
+ 						ok = await apply_cfgset(m.cfgset)
+ 						if ok:
+-							print('Applied cfgset...')
++							log.info('Applied cfgset...')
+ 						#	# Optional sniff diagnostic after applying config
+ 						#	print('Doing a sniff...')
+ 						#	sn = await sniff_serial(ser, ser_lock, dur_s=1.5)
+ 						#	print(f"[sniff] frames={sn['frames']} bytes={sn['bytes']}")
+ 						#	print('End of configuration and sniffing...')
+ 					elif m.HasField("file_begin"):
+-						print('Looking at beginning of file...')
++						log.debug('Looking at beginning of file...')
+ 						file_name = m.file_begin.name or "config.bin"
+ 						file_tmp  = os.path.join(file_dir, f".{file_name}.part")
+ 						with contextlib.suppress(Exception):
+ 							if file_fp and not file_fp.closed:
+ 								file_fp.close()
+ 						file_fp = open(file_tmp, "wb")
+ 					elif m.HasField("file_chunk"):
+-						print('Looking at chunk of file...')
++						log.debug('Looking at chunk of file...')
+ 						if file_fp:
+ 							file_fp.write(m.file_chunk.data)
+ 					elif m.HasField("file_end"):
+-						print('Looking at end of file...')
++						log.debug('Looking at end of file...')
+ 						# Finalize file atomically to its final name
+ 						ok = True
+ 						try:
+@@ -1105,14 +1107,14 @@
+ 			except asyncio.CancelledError:
+ 				# Upstream told us to exit
+ 				stream_broke = True; raise
+ 			except grpc.aio.AioRpcError as e:
+ 				# Stream terminated with an RPC-level error (e.g., UNAVAILABLE).
+-				stream_broke = True; print(f"[control] stream closed: {e.code().name} - {e.details()}")
++				stream_broke = True; log.error(f"[control] stream closed: {e.code().name} - {e.details()}")
+ 			except Exception as e:
+ 				# Unexpected local error while handling messages.
+-				stream_broke = True; print(f"[control] stream error: {type(e).__name__}: {e}")
++				stream_broke = True; log.error(f"[control] stream error: {type(e).__name__}: {e}")
+ 			finally:
+ 				# Stop watchdog and data plane on exit
+ 				if _ping_task:
+ 					_ping_task.cancel()
+ 					with contextlib.suppress(Exception):
+@@ -1119,16 +1121,16 @@
+ 				if stream_ended or stream_broke:
+ 					if _telem_stop_evt and not _telem_stop_evt.is_set():
+ 						_telem_stop_evt.set()
+ 					await stop_role_task()
+-			print('Made it out of the loop…')
++			log.info('Made it out of the loop…')
+ 	except asyncio.CancelledError:
+ 		# The entire control_pipe task was cancelled by our supervisor.
+-		print(f'Shutting down...')
++		log.info(f'Shutting down...')
+ 		return
+ 
+ 	# If we get here, control stream ended; role tasks will have been stopped.
+-	print("Successfully configured device")
++	log.info("Successfully configured device")
+ 
+ async def publish_loop(ser, ser_lock, mount, token, rtcm_q=None):
+ 	"""Role=BASE: stream RTCM frames from `_rtcm_q` to server via Caster.Publish."""
+-	print("Inside the publish loop")
++	log.info("Inside the publish loop")
+ 	if rtcm_q is None:
+ 		global _rtcm_q
+ 		rtcm_q = _rtcm_q
+@@ -1154,7 +1156,7 @@
+ 
+ 			seq = 0
+ 			while True:
+-				print(f'Seeing if writing bytes...')
++				log.debug(f'Seeing if writing bytes...')
+ 				# Pull RTCM frame from demux; time out periodically to remain cancellable
+ 				try:
+ 					frame = await asyncio.wait_for(rtcm_q.get(), timeout=2.0)
+ 					if frame is _RTCM_SENTINEL:
+-						print("[publish] ignoring stray sentinel")
++						log.debug("[publish] ignoring stray sentinel")
+ 						continue
+ 					if frame is None:
+ 						# Sentinel means upstream is shutting down → exit
+-						print("[publish] WARNING: ignoring None from demux")
++						log.warning("[publish] WARNING: ignoring None from demux")
+ 						closing = True
+ 						break
+ 				except asyncio.TimeoutError:
+@@ -1183,11 +1185,11 @@
+ 						if kind == "RTCM":
+ 							if PRINT_RTCM_IDS:
+ 								try:
+-									print(f"RTCM {_rtcm_id(frame[3:-3])} len={L}B", flush=True)
++									log.debug(f"RTCM {_rtcm_id(frame[3:-3])} len={L}B")
+ 								except Exception:
+-									print(f"RTCM len={L}B", flush=True)
++									log.debug(f"RTCM len={L}B")
+ 						elif kind == "UBX":
+-							print(f"UBX {frame[2]:02X}-{frame[3]:02X} len={length}B", flush=True)
++							log.debug(f"UBX {frame[2]:02X}-{frame[3]:02X} len={length}B")
+ 
+ 						# Diagnostics: if publisher is fed UBX accidentally, do nothing; server expects RTCM frames.
+ 						continue
+@@ -1234,34 +1236,34 @@
+ 	async with grpc.aio.insecure_channel(
+ 		CAST_ADDR,
+ 		options=[("grpc.keepalive_time_ms", 20000), ("grpc.keepalive_timeout_ms", 5000)],
+ 	) as ch:
+ 		stub = rpc.CasterStub(ch)
+-		print("Inside publish loop")
++		log.info("Inside publish loop")
+ 		call = stub.Publish()  # open client-streaming call
+ 		try:
+ 			# Send OPEN once with mount/token/label
+-			#print("[publish] OPEN sent")
++			#log.debug("[publish] OPEN sent")
+ 			await call.write(pb.PublishMsg(open=pb.PublishOpen(mount=mount, token=token, label="f9t-agent")))
+-			print("[publish] OPEN sent")
++			log.info("[publish] OPEN sent")
+ 		except grpc.aio.AioRpcError as e:
+-			print(f"[publish] OPEN write failed: {e.code().name} - {e.details()}")
++			log.warning(f"[publish] OPEN write failed: {e.code().name} - {e.details()}")
+ 			closing = True
+ 			return
+ 
+ 		seq = 0
+ 		while True:
+ 			# Pull RTCM frame from demux; time out periodically to remain cancellable
+ 			try:
+ 				frame = await asyncio.wait_for(rtcm_q.get(), timeout=2.0)
+ 				if frame is _RTCM_SENTINEL:
+-					print("[publish] ignoring stray sentinel")
++					log.debug("[publish] ignoring stray sentinel")
+ 					continue
+ 				if frame is None:
+ 					# Sentinel means upstream is shutting down → exit
+-					print("[publish] WARNING: ignoring None from demux")
++					log.warning("[publish] WARNING: ignoring None from demux")
+ 					closing = True
+ 					break
+ 			except asyncio.TimeoutError:
+ 				continue
+ 			if not frame:
+ 				continue
+ 
+ 			# RTCM vs UBX safety: ensure we only publish RTCM frames to the server
+@@ -1322,31 +1324,31 @@
+ 					# stream remains open for more frames.
+ 					continue
+ 				else:
+-					print(f"[publish] frame write failed: {e.code().name} - {e.details()}")
++					log.warning(f"[publish] frame write failed: {e.code().name} - {e.details()}")
+ 					closing = True
+ 					break
+ 	except asyncio.CancelledError:
+ 		exit_reason = "CancelledError"; raise
+ 	except grpc.aio.AioRpcError as e:
+-		print(f"[publish] stream error: {e.code().name} - {e.details()}")
++		log.error(f"[publish] stream error: {e.code().name} - {e.details()}")
+ 		return
+ 	except Exception as e:
+-		print(f"[publish] stream error: {e}")
++		log.error(f"[publish] stream error: {e}")
+ 	finally:
+-		print(f"[publish] exit reason: {exit_reason}")
++		log.info(f"[publish] exit reason: {exit_reason}")
+ 		if closing and call is not None:
+ 			# Half-close the client stream and await final ACK with total frames
+ 			with contextlib.suppress(Exception):
+ 				await call.done_writing()
+ 			with contextlib.suppress(Exception):
+ 				ack = await call
+ 				if ack:
+-					print(f"[publish] caster ack: frames={ack.frames}")
++					log.info(f"[publish] caster ack: frames={ack.frames}")
+ 
+ async def subscribe_loop(ser, ser_lock, mount, token):
+ 	# Role=RECEIVER: stream RTCM frames from server to the GNSS serial port.
+-	print('Currently in subscribe loop')
++	log.info('Currently in subscribe loop')
+ 	total = 0
+ 	last_log = time.time()
+ 	last_id = {}   # msgnum -> count within period
+ 	last_any = 0
+@@ -1364,7 +1366,7 @@
+ 		req = pb.SubscribeRequest(mount=mount, token=token, label="f9t-agent")
+ 		
+ 		# Consume frames from the server’s server-streaming RPC.
+-		print('Currently in subscribe loop')
++		log.info('Currently in subscribe loop')
+ 		async for frame in stub.Subscribe(req):
+ 		# Each frame is a pb.RtcmFrame; write its bytes directly to the GNSS device.
+ 		# Use the lock to serialize with any concurrent serial users.
+@@ -1376,7 +1378,7 @@
+ 			data = frame.data
+ 			
+ 			# Optional: verify RTCM CRC24Q (strip last 3 CRC bytes)
+ 			if len(data) >= 6 and data[0] == 0xD3:
+ 				L = ((data[1] & 0x03) << 8) | data[2]
+ 				total_len = 3 + L + 3
+ 				body = data[:3+L]              # header+payload
+ 				crc  = int.from_bytes(data[3+L:3+L+3], 'big')
+-				if len(data) != total_len:
+-					print(f"[subscribe] BAD LEN (have={len(data)} want={total_len}) — dropping frame")
++				if len(data) != total_len:
++					log.warning(f"[subscribe] BAD LEN (have={len(data)} want={total_len}) — dropping frame")
+ 					continue
+-				if _crc24q(body) != crc:
+-					print("[subscribe] BAD CRC24Q — dropping frame")
++				if _crc24q(body) != crc:
++					log.warning("[subscribe] BAD CRC24Q — dropping frame")
+ 					continue
+ 
+ 			# Optional: print message number
+@@ -1396,7 +1398,7 @@
+ 			try:
+ 				async with ser_lock:
+-					print(f'Writing {frame.data}')
++					log.debug(f'Writing {frame.data}')
+ 					ser.write(frame.data)
+ 			except (serial.SerialException, OSError) as e:
+-				print(f"[subscribe] serial write error: {e}")
++				log.warning(f"[subscribe] serial write error: {e}")
+ 				await asyncio.sleep(0.2)
+ 				continue
+ 
+@@ -1416,17 +1418,17 @@
+ 			# Log every ~5s so you see progress
+ 			if time.time() - last_log > 5.0:
+ 				tops = ", ".join(f"{k}:{v}" for k, v in sorted(last_id.items()))
+-				print(f"[subscribe] wrote {total} RTCM frames to GNSS"
+-					  + (f" | top IDs: {tops}" if tops else ""))
++				log.info(f"[subscribe] wrote {total} RTCM frames to GNSS"
++					  + (f" | top IDs: {tops}" if tops else ""))
+ 				last_log = time.time()
+ 				last_id.clear()
+ 	except grpc.aio.AioRpcError as e:
+-		# Stream/network failure — control plane supervises restarts.
+-		print(f"[subscribe] stream error: {e.code().name} - {e.details()}")
++		# Stream/network failure — control plane supervises restarts.
++		log.error(f"[subscribe] stream error: {e.code().name} - {e.details()}")
+ 	except Exception as e:
+-		print(f"[subscribe] unexpected error: {type(e).__name__}: {e}")
++		log.error(f"[subscribe] unexpected error: {type(e).__name__}: {e}")
+ 
+@@ -1424,7 +1426,7 @@
+ 			await asyncio.sleep(2.0)
+ 
+ 		except Exception as e:
+-			print("agent error:", e)
++			log.error("agent error:", e)
+ 			await asyncio.sleep(2.0)  # backoff & rediscover
