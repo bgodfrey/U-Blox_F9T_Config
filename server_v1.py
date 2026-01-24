@@ -15,6 +15,7 @@ following:
 from __future__ import annotations
 from datetime import datetime, timezone
 from logging_setup import setup_logging
+
 import argparse
 import asyncio
 import contextlib
@@ -33,16 +34,19 @@ import caster_setup_pb2 as pb
 import caster_setup_pb2_grpc as rpc
 
 # ----------------------------- basic config ---------------------------------
+REPO_ROOT = Path(__file__).resolve().parent
 _START_TS  = datetime.now(timezone.utc)
 _START_STR = _START_TS.strftime("%Y%m%d_%H%M%SZ")
-_LOG_PATH_TELEM = f"./telemetry_{_START_STR}.jsonl"  # directory; per-line JSONL records will be appended
-os.makedirs(os.path.dirname(_LOG_PATH_TELEM), exist_ok=True)
-_LOG_PATH_LOGGING_DIR = "./logging"
-os.makedirs(os.path.dirname(_LOG_PATH_LOGGING_DIR), exist_ok=True)
 
-_LOG_PATH_LOGGING = os.path.join(_LOG_PATH_LOGGING_DIR, f"SERVER_{_START_STR}.txt")
+TELEM_DIR   = REPO_ROOT / "telemetry"
+LOGGING_DIR = REPO_ROOT / "logging"
+
+TELEM_DIR.mkdir(parents=True, exist_ok=True)
+LOGGING_DIR.mkdir(parents=True, exist_ok=True)
 
 
+_LOG_PATH_TELEM   = str(TELEM_DIR / f"telemetry_{_START_STR}.jsonl")
+_LOG_PATH_LOGGING = str(LOGGING_DIR / f"SERVER_{_START_STR}.txt")
 
 # Setup for a connection is given by
 #	. Role:  Controls whether a device sends out (base) or takes in (receiver) RTCM messages
@@ -53,7 +57,7 @@ _LOG_PATH_LOGGING = os.path.join(_LOG_PATH_LOGGING_DIR, f"SERVER_{_START_STR}.tx
 # to check if a device needs to be reconfigured or not.
 
 DEFAULT_POLICY = {
-	"manifest": "./manifest_f9t.json5",
+	"manifest": str(REPO_ROOT / "manifest_f9t.json5"),
 	"publish_mount": "BASE",
 	"publish_token": "PUBTOKEN",
 	"subscribe_mount": "BASE",
