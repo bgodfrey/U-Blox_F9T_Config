@@ -48,8 +48,10 @@ def find_repo_root() -> Path:
 RPC_ROOT = find_repo_root() / "src" / "panoseti_grpc" / "generated"
 sys.path.insert(0, str(RPC_ROOT))
 
+from panoseti_grpc.telemetry.client import make_grpc_logger
 import panoseti.telemetry.telemetry_pb2 as tpb
 import panoseti.telemetry.telemetry_pb2_grpc as tgrpc
+
 
 # ----------------------------- basic config ---------------------------------
 REPO_ROOT = Path(__file__).resolve().parent
@@ -92,6 +94,12 @@ LAST_SEEN = {}
 
 TELEM_FWD_Q: asyncio.Queue = asyncio.Queue(maxsize=5000)  # bounded
 _telem_fwd_task: asyncio.Task | None = None
+
+LOKI_LOGGER = make_grpc_logger(
+    service_name="GNSS_Control", 
+    level=logging.DEBUG,
+    attach_to_root=True
+)
 
 # ------------------------------ helpers -------------------------------------
 
@@ -299,7 +307,7 @@ async def heartbeat(out_q: asyncio.Queue, period: float = 5.0) -> None:
 	except asyncio.CancelledError:
 		pass
 
-
+# Note: February 2026 not using this
 async def telem_forwarder_loop():
 	"""
 	Drain TELEM_FWD_Q and forward to Telemetry.ReportStatus (unary).
@@ -764,7 +772,8 @@ async def serve(addr: str = "0.0.0.0:50051") -> None:
 	
 	# Start accepting RPCs
 	await server.start()
-	_telem_fwd_task = asyncio.create_task(telem_forwarder_loop())
+
+	#_telem_fwd_task = asyncio.create_task(telem_forwarder_loop())
 
 	# --- Wait for shutdown condition ---
 

@@ -7,8 +7,8 @@ _LEVELS = {0: logging.ERROR, 1: logging.WARNING, 2: logging.INFO, 3: logging.DEB
 def setup_logging(
 	verbosity: int = 2,
 	log_file: Optional[str] = None,
-	console: bool = True,             # <- NEW: control console output
-	redirect_std: bool = False,       # <- NEW: redirect print()/stderr into logging
+	console: bool = True,             # control console output
+	redirect_std: bool = False,       # redirect print()/stderr into logging
 ) -> None:
 	lvl = _LEVELS.get(max(0, min(verbosity, 3)), logging.INFO)
 

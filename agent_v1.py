@@ -49,6 +49,17 @@ import grpc, serial
 import caster_setup_pb2 as pb
 import caster_setup_pb2_grpc as rpc
 import pyubx2.ubxtypes_configdb as cdb
+
+def find_repo_root() -> Path:
+	try:
+		return Path(subprocess.check_output(["git", "rev-parse", "--show-toplevel"], stderr=subprocess.DEVNULL, universal_newlines=True,).strip())
+	except Exception:
+		return Path(__file__).resolve().parent
+
+RPC_ROOT = find_repo_root() / "src" / "panoseti_grpc" / "generated"
+sys.path.insert(0, str(RPC_ROOT))
+import panoseti.telemetry.telemetry_pb2 as tpb
+import panoseti.telemetry.telemetry_pb2_grpc as tgrpc
 from typing import Optional, Tuple, Dict
 
 # --- Configuration & constants ----------------------------------------------
@@ -76,6 +87,7 @@ _START_TS  = datetime.now(timezone.utc)
 _START_STR = _START_TS.strftime("%Y%m%d_%H%M%SZ")
 
 _TELEM_PATH = os.path.join(TELEM_DIR, f"UNKNOWN_{_START_STR}.jsonl")
+_TELEM_SUFFIX = f"UNKNOWN_{_START_STR}"
 _LOG_PATH = os.path.join(LOG_DIR, f"UNKNOWN_{_START_STR}.txt")
 
 # --- Global scope variables -------------------------
@@ -97,7 +109,11 @@ _serial_stop_evt: Optional[asyncio.Event] = None
 _shutdown_evt   = asyncio.Event()                   # Whole‑agent shutdown (global)
 
 _role = {"task": None, "name": None}                # Active role task + label
-
+_loki_log = make_grpc_logger(
+    service_name="GNSS_Control_Agent", 
+    level=logging.DEBUG,
+    attach_to_root=True
+)
 
 # Mapping from EXT CORE strings → friendly TIM/PROT versions
 # As of November 2025, all F9T modules have the 2.20 firmware released January 2022
@@ -267,7 +283,7 @@ async def restart_telem_publisher():
 		# start new
 		_telem_stop_evt = asyncio.Event()
 		_telem_pub_task = asyncio.create_task(telem_publisher(_call_writer, _agg, _telem_stop_evt))
-		log.info("[telem] publisher restarted")
+		_loki_log.info("[telem] publisher restarted")
 
 _agg = TelemetryAgg()  # single aggregator instance shared by publisher
 
@@ -302,7 +318,7 @@ class CallWriter:
 			return True
 		except (asyncio.InvalidStateError, grpc.aio.AioRpcError) as e:
 			self._open = False
-			log.error("[agent] control write failed: %s %s", getattr(e, "code", lambda: None)() if hasattr(e, "code") else "", getattr(e, "details", lambda: None)() if hasattr(e, "details") else "")			
+			_loki_log.error("[agent] control write failed: %s %s", getattr(e, "code", lambda: None)() if hasattr(e, "code") else "", getattr(e, "details", lambda: None)() if hasattr(e, "details") else "")			
 			return False
 
 # ----------------------------------------------------------------------------
@@ -358,7 +374,7 @@ async def serial_demux_loop(ser, ser_lock, rtcm_q: asyncio.Queue, ubx_q: asyncio
 					continue
 				backoff = 0.01
 			except (serial.SerialException, serial.SerialTimeoutException, OSError, ValueError) as e:
-				log.warning("[demux] serial read error: %s", e)
+				_loki_log.warning("[demux] serial read error: %s", e)
 				# brief retry loop with capped backoff
 				for _ in range(10):
 					if stop_evt.is_set():
@@ -386,9 +402,9 @@ async def serial_demux_loop(ser, ser_lock, rtcm_q: asyncio.Queue, ubx_q: asyncio
 					if _crc24q(frame[:-3]) == int.from_bytes(frame[-3:], "big"):
 						if PRINT_RTCM_IDS:
 							try:
-								log.debug("RTCM %d len=%dB", _rtcm_id(frame[3:-3]), L)
+								_loki_log.debug("RTCM %d len=%dB", _rtcm_id(frame[3:-3]), L)
 							except Exception:
-								log.debug("RTCM len=%dB", L)
+								_loki_log.debug("RTCM len=%dB", L)
 						await rtcm_q.put(frame)
 						del rx[:total]
 						continue
@@ -409,7 +425,7 @@ async def serial_demux_loop(ser, ser_lock, rtcm_q: asyncio.Queue, ubx_q: asyncio
 					ck_a, ck_b = _ubx_ck(frame[2:6+length])
 					if frame[-2] == ck_a and frame[-1] == ck_b:
 						if PRINT_UBX_SUMMARY:
-							log.debug("UBX %02X-%02X len=%dB", frame[2], frame[3], length)
+							_loki_log.debug("UBX %02X-%02X len=%dB", frame[2], frame[3], length)
 						await ubx_q.put(frame)
 						del rx[:total]
 						continue
@@ -479,7 +495,9 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 			avg_cno  = float(getattr(agg, "avg_cno", 0.0) or 0.0)
 			pdop     = float(getattr(agg, "pdop", 0.0) or 0.0)
 
+
 			# protobuf payload (for remote)
+			'''
 			t = pb.Telemetry(
 				unix_ms=unix_ms,
 				temp_c=temp_c,
@@ -489,6 +507,40 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 				gps_used=gps_used, gal_used=gal_used,
 				bds_used=bds_used, glo_used=glo_used,
 				avg_cno=avg_cno, pdop=pdop,
+			)
+			'''
+
+			# Put the “extra” stuff in extra_data so GnssPayload stays stable
+			device_type = "gnss"
+			if '_' in _TELEM_SUFFIX:
+				alias = _TELEM_SUFFIX[:_TELEM_SUFFIX.index('_')]
+				device_id = f"{_TELEM_SUFFIX[_TELEM_SUFFIX.index('_')+1:]}"
+			else:
+				device_id = f"{_TELEM_SUFFIX}"
+
+			extra = {
+				"alias": alias,
+				"temp_c": float(temp_c),
+				"pdop": pdop,
+				"gps_used": gps_used,
+				"gal_used": gal_used,
+				"bds_used": bds_used,
+				"glo_used": glo_used,
+			}
+
+			req = tpb.StatusRequest(
+				device_type=device_type,
+				device_id=device_id,
+				timestamp=unix_ms,
+				gnss=tpb.GnssPayload(
+					unix_ms=unix_ms,
+					qerr_ns=qerr_ns,
+					utc_ok=utc_ok,
+					num_vis=num_vis,
+					num_used=num_used,
+					avg_cno=avg_cno,
+					extra_data=_struct_from_dict(extra),
+				),
 			)
 
 			# local JSONL record (flat & compact)
@@ -509,7 +561,7 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 				await _append_jsonl(rec)
 				dt = time.monotonic() - t0
 				if dt > 0.05:
-					log.warning("[telem] append_jsonl took %.3fs", dt)
+					_loki_log.warning("[telem] append_jsonl took %.3fs", dt)
 
 			# remote publish (guarded + optional)
 			if SAVE_TELEM_REMOTE:
@@ -517,10 +569,10 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 				if not writer or not writer.is_open():
 					break
 				try:
-					ok = await writer.write(pb.ControlMsg(telem=t))
+					ok = await writer.write(tpb.ControlMsg(telem=t))
 					dt = time.monotonic() - t0
 					if dt > 0.05:
-						log.warning("[telem] grpc write took %.3fs", dt)
+						_loki_log.warning("[telem] grpc write took %.3fs", dt)
 				except (asyncio.InvalidStateError, grpc.aio.AioRpcError):
 					break
 				if not ok:
@@ -528,7 +580,7 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 
 			t_work = time.monotonic() - t_loop0
 			if t_work > 1.2:
-				log.warning("[telem] work section took %.3fs (expected <~0.2-0.5s)", t_work)
+				_loki_log.warning("[telem] work section took %.3fs (expected <~0.2-0.5s)", t_work)
 
 			t_sleep0 = time.monotonic()
 			# cadence ~1 Hz with early-exit
@@ -537,10 +589,10 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 			except asyncio.TimeoutError:
 				pass
 			#t_sleep = time.monotonic() - t_sleep0
-			#log.warning("[telem] sleep section took %.3fs", t_sleep)
+			#_loki_log.warning("[telem] sleep section took %.3fs", t_sleep)
 			dt_loop = time.monotonic() - last
 			last = time.monotonic()
-			log.debug("[telem] loop period %.3fs", dt_loop)
+			_loki_log.debug("[telem] loop period %.3fs", dt_loop)
 	except asyncio.CancelledError:
 		pass
 
@@ -562,6 +614,7 @@ def set_telem_log_alias(alias: str, device_id: str = "") -> None:
 	alias_safe = _sanitize(alias, fallback=_sanitize(device_id) or "UNKNOWN")
 	
 	suffix = f"{alias_safe}-{device_id[-4:]}" if device_id else alias_safe
+	suffix_full = f"{alias_safe}-{device_id}" if device_id else alias_safe
 	# If you don't want the device id in the name too, uncomment:
 	#suffix = alias_safe
 
@@ -578,6 +631,7 @@ def set_telem_log_alias(alias: str, device_id: str = "") -> None:
 		return
 
 	_TELEM_PATH = new_path
+	_TELEM_SUFFIX = suffix_full
 
 # keep letters, numbers, dash, underscore; collapse others to '_'
 def _sanitize(name: str, fallback: str = "UNKNOWN") -> str:
@@ -748,14 +802,14 @@ async def _valget_verify(ser, ser_lock, cfgData, layer: str = "RAM", timeout_per
 		want = want_by_name[cfg_name]
 		have = got_by_name.get(cfg_name)
 		if have is None:
-			log.warning("%-36s : MISSING (wanted %r) [%s]", cfg_name, want, layer)
+			_loki_log.warning("%-36s : MISSING (wanted %r) [%s]", cfg_name, want, layer)
 			mismatches.append(f"{cfg_name}: missing (want={want!r})")
 			ok = False
 			continue
 		if _equal(want, have):
-			log.info("%-36s : OK [%s]", cfg_name, layer)
+			_loki_log.info("%-36s : OK [%s]", cfg_name, layer)
 		else:
-			log.warning("%-36s : MISMATCH (wanted %r, got %r) [%s]", cfg_name, want, have, layer)
+			_loki_log.warning("%-36s : MISMATCH (wanted %r, got %r) [%s]", cfg_name, want, have, layer)
 			mismatches.append(f"{cfg_name}: got {have!r}, want {want!r}")
 			ok = False
 	return ok, mismatches
@@ -913,7 +967,7 @@ def discover_f9x(timeout=0.6, port: Optional[str] = None):
 					if getattr(msg, "identity", "") == "SEC-UNIQID":
 						uid = getattr(msg, "uniqueId", None)
 						uid_hex = (f"{uid:010X}" if isinstance(uid, int) else bytes(uid).hex().upper())
-						log.info("discovered %s uid=%s", dev, uid_hex)
+						_loki_log.info("discovered %s uid=%s", dev, uid_hex)
 						return dev, uid_hex
 		except RuntimeError:
 			sys.exit(1)
@@ -968,15 +1022,15 @@ async def stop_all_serial_tasks():
 # Cancel the current role task (publish/subscribe) without touching queues.
 async def stop_role_task():
 	t = _role.get("task")
-	log.debug("Stopping role task…")
+	_loki_log.debug("Stopping role task…")
 	if t and not t.done():
-		log.debug("Canceling current role task")
+		_loki_log.debug("Canceling current role task")
 		t.cancel()
 		with contextlib.suppress(asyncio.CancelledError):
 			await t
-	log.debug("Updating role state")
+	_loki_log.debug("Updating role state")
 	_role.update(task=None, name=None)
-	log.debug("Role cleared")
+	_loki_log.debug("Role cleared")
 
 
 # Start the role task selected by the server (`BASE` → publish, `RECEIVER` → subscribe).
@@ -991,9 +1045,9 @@ async def start_role_task(role_enum: int, ser, ser_lock, mount: str, token: str,
 	else:
 		_role["task"] = None
 		_role["name"] = "UNSPECIFIED"
-		log.warning("Role unspecified; not starting publish/subscribe")
+		_loki_log.warning("Role unspecified; not starting publish/subscribe")
 		return
-	log.info("Set role to %s (enum=%s)", _role["name"], pb.Role.Name(role_enum))
+	_loki_log.info("Set role to %s (enum=%s)", _role["name"], pb.Role.Name(role_enum))
 
 # Set (or refresh) the ping watchdog deadline timeout_s seconds from now.
 def _arm_ping_deadline(timeout_s: float = 15.0) -> None:
@@ -1009,7 +1063,7 @@ async def _ping_watchdog():
 			await asyncio.sleep(2.0)
 			dl = _ping_deadline
 			if dl and time.monotonic() > dl:
-				log.warning("[agent] ping watchdog: server silent → forcing reconfig next session")
+				_loki_log.warning("[agent] ping watchdog: server silent → forcing reconfig next session")
 				_last_cfg_version = None
 				await stop_role_task()
 				return
@@ -1051,7 +1105,7 @@ Shutdown conventions:
 """
 async def publish_loop(ser, ser_lock, mount, token, rtcm_q=None):
 	"""Role=BASE: stream RTCM frames from `_rtcm_q` to server via Caster.Publish."""
-	log.debug("publish: loop started")
+	_loki_log.debug("publish: loop started")
 	
 	# If no explicit queue was provided, use the global that demux fills.
 	if rtcm_q is None:
@@ -1073,11 +1127,11 @@ async def publish_loop(ser, ser_lock, mount, token, rtcm_q=None):
 			try:
 				# 2) Send exactly one OPEN message with mount/token/label. This lets the server bind the stream to a mount point, do authentication, etc.
 				await call.write(pb.PublishMsg(open=pb.PublishOpen(mount=mount, token=token, label="f9t-agent")))
-				log.info("[publish] OPEN sent")
+				_loki_log.info("[publish] OPEN sent")
 			except grpc.aio.AioRpcError as e:
 				# OPEN failed (e.g., network error, server rejected).
 				exit_reason = f"OPEN_write_error:{e.code().name}"
-				log.error("[publish] OPEN write failed: %s - %s", e.code().name, e.details())
+				_loki_log.error("[publish] OPEN write failed: %s - %s", e.code().name, e.details())
 				closing = True
 				return
 
@@ -1110,7 +1164,7 @@ async def publish_loop(ser, ser_lock, mount, token, rtcm_q=None):
 				except grpc.aio.AioRpcError as e:
 					# Mid-stream write failed — capture code and exit.
 					exit_reason = f"frame_write_error:{e.code().name}"
-					log.error("[publish] frame write failed: %s - %s", e.code().name, e.details())
+					_loki_log.error("[publish] frame write failed: %s - %s", e.code().name, e.details())
 					closing = True
 					break
 	except asyncio.CancelledError:
@@ -1119,15 +1173,15 @@ async def publish_loop(ser, ser_lock, mount, token, rtcm_q=None):
 	except grpc.aio.AioRpcError as e:
 		# Channel-level failure while opening/using the stream (e.g., UNAVAILABLE).
 		exit_reason = f"AioRpcError:{e.code().name}"
-		log.error("[publish] stream error: %s - %s", e.code().name, e.details())
+		_loki_log.error("[publish] stream error: %s - %s", e.code().name, e.details())
 		return
 	except Exception as e:
 		# Any unexpected exception (keep the agent alive; outer loops can retry).
 		exit_reason = f"Exception:{type(e).__name__}"
-		log.exception("[publish] stream error: %s", e)
+		_loki_log.exception("[publish] stream error: %s", e)
 	finally:
 		# 4) Print a single-line reason every time the loop ends (good logging).
-		log.info("[publish] exit reason: %s", exit_reason)
+		_loki_log.info("[publish] exit reason: %s", exit_reason)
 		
 		# On a normal/known-close path, half-close the stream and await final acknowledgement.
 		if closing and call is not None:
@@ -1138,7 +1192,7 @@ async def publish_loop(ser, ser_lock, mount, token, rtcm_q=None):
 			with contextlib.suppress(Exception):
 				ack = await call
 				if ack:
-					log.info("[publish] caster ack: frames=%d", ack.frames)
+					_loki_log.info("[publish] caster ack: frames=%d", ack.frames)
 
 	"""
 Role = RECEIVER: pull RTCM frames from the server and write them to the GNSS serial port.
@@ -1176,7 +1230,7 @@ async def subscribe_loop(ser, ser_lock, mount, token):
 		• periodic progress logging
 		• graceful handling of stream/serial errors
 	"""
-	log.info("subscribe: loop started")
+	_loki_log.info("subscribe: loop started")
 
 	total = 0
 	last_log = time.time()
@@ -1200,13 +1254,13 @@ async def subscribe_loop(ser, ser_lock, mount, token):
 
 					# If length is inconsistent, drop and continue (resync will happen on next frame).
 					if len(data) != total_len:
-						log.warning("[subscribe] BAD LEN (have=%d want=%d) — dropping frame", len(data), total_len)
+						_loki_log.warning("[subscribe] BAD LEN (have=%d want=%d) — dropping frame", len(data), total_len)
 						continue
 
 					body = data[:3+L]              # header+payload
 					crc  = int.from_bytes(data[3+L:3+L+3], 'big')
 					if _crc24q(body) != crc:
-						log.warning("[subscribe] BAD CRC24Q — dropping frame")
+						_loki_log.warning("[subscribe] BAD CRC24Q — dropping frame")
 						continue
 
 					# Extract and record the RTCM message number for visibility.
@@ -1219,7 +1273,7 @@ async def subscribe_loop(ser, ser_lock, mount, token):
 						ser.write(data)
 						# ser.flush()  # usually unnecessary; OS buffers handle this
 				except (serial.SerialException, OSError) as e:
-					log.error("[subscribe] serial write error: %s", e)
+					_loki_log.error("[subscribe] serial write error: %s", e)
 					# Back off briefly; if persistent, outer control should restart us.
 					await asyncio.sleep(0.2)
 					continue
@@ -1230,7 +1284,7 @@ async def subscribe_loop(ser, ser_lock, mount, token):
 				if time.time() - last_log > 5.0:
 					# Show top few IDs to avoid spam.
 					tops = ", ".join(f"{k}:{v}" for k, v in id_hist.most_common(5))
-					log.info("[subscribe] wrote %d RTCM frames to GNSS%s", total, (f" | top IDs: {tops}" if tops else ""))
+					_loki_log.info("[subscribe] wrote %d RTCM frames to GNSS%s", total, (f" | top IDs: {tops}" if tops else ""))
 					last_log = time.time()
 
 	except asyncio.CancelledError:
@@ -1238,9 +1292,9 @@ async def subscribe_loop(ser, ser_lock, mount, token):
 		raise
 	except grpc.aio.AioRpcError as e:
 		# Stream/network failure — control plane supervises restarts.
-		log.error("[subscribe] stream error: %s - %s", e.code().name, e.details())
+		_loki_log.error("[subscribe] stream error: %s - %s", e.code().name, e.details())
 	except Exception as e:
-		log.exception("[subscribe] unexpected error: %s: %s", type(e).__name__, e)
+		_loki_log.exception("[subscribe] unexpected error: %s: %s", type(e).__name__, e)
 
 # ----------------------------------------------------------------------------
 # Control plane (bididirectional Pipe): hello, cfg application, telemetry, file receive
@@ -1306,7 +1360,7 @@ async def control_pipe(ser, ser_lock, uid_hex, fwver, protver, hwver, mount_toke
 				fwver=fwver, protver=protver, hwver=hwver,
 				label="f9t-agent"
 			)))
-			log.info("control: sent HELLO")
+			_loki_log.info("control: sent HELLO")
 
 			# Arm the ping watchdog immediately; server pings will refresh it.
 			_arm_ping_deadline()
@@ -1328,7 +1382,7 @@ async def control_pipe(ser, ser_lock, uid_hex, fwver, protver, hwver, mount_toke
 				global _last_cfg_version, _telem_stop_evt, _telem_pub_task
 				# Fast-path: already applied this version.
 				if _last_cfg_version == cfgset.version:
-					log.debug("[cfgset] version %d already applied; skipping", cfgset.version)
+					_loki_log.debug("[cfgset] version %d already applied; skipping", cfgset.version)
 					if _call_writer and _call_writer.is_open():
 						await _call_writer.write(pb.ControlMsg(result=pb.ApplyResult(name="CfgSet", ok=True, error="")))
 						await restart_telem_publisher()
@@ -1337,14 +1391,14 @@ async def control_pipe(ser, ser_lock, uid_hex, fwver, protver, hwver, mount_toke
 				async with _cfg_apply_lock:
 					# Double-check inside the lock (in case two arrive close together).
 					if _last_cfg_version == cfgset.version:
-						log.debug("[cfgset] version %d already applied (post-lock); skipping", cfgset.version)
+						_loki_log.debug("[cfgset] version %d already applied (post-lock); skipping", cfgset.version)
 						if _call_writer and _call_writer.is_open():
 							await _call_writer.write(pb.ControlMsg(result=pb.ApplyResult(name="CfgSet", ok=True, error="")))
 							await restart_telem_publisher()
 						return True
 					ok, err = True, ""
 					try:
-						log.info("[cfgset] v=%d (VALSET via config_set)", cfgset.version)
+						_loki_log.info("[cfgset] v=%d (VALSET via config_set)", cfgset.version)
 						# Role-aware RTCM USB visibility: helpful for local debugging/logging.
 						role_enum = mount_token_holder.get("role")
 						is_base   = (role_enum == pb.Role.BASE)
@@ -1365,7 +1419,7 @@ async def control_pipe(ser, ser_lock, uid_hex, fwver, protver, hwver, mount_toke
 								continue
 							k = cv.key.strip().upper().replace("-", "_")
 							cfgData.append((k, v))
-						log.info("[cfgset] applying %d keys via config_set (RAM only)", len(cfgData))
+						_loki_log.info("[cfgset] applying %d keys via config_set (RAM only)", len(cfgData))
 
 						# Apply in small batches to avoid overflowing device I/O buffers.
 						CHUNK = 30
@@ -1382,19 +1436,19 @@ async def control_pipe(ser, ser_lock, uid_hex, fwver, protver, hwver, mount_toke
 								await asyncio.sleep(0.1)  # let device breathe
 							except Exception as e:
 								# Non-fatal: we continue with remaining batches but report in logs.
-								log.warning("[valset] batch %d failed: %s", i // CHUNK, e)
-						log.info("[valset] applied %d/%d items via config_set", applied, len(cfgData))
+								_loki_log.warning("[valset] batch %d failed: %s", i // CHUNK, e)
+						_loki_log.info("[valset] applied %d/%d items via config_set", applied, len(cfgData))
 
 						verify_layer = (getattr(cfgset, "verify_layer", "") or "RAM").upper()
-						log.info("[cfgset] verifying layer %s", verify_layer)
+						_loki_log.info("[cfgset] verifying layer %s", verify_layer)
 						ok_verify, mismatches = await _valget_verify(ser, ser_lock, cfgData, layer=verify_layer, timeout_per_chunk=1.0)
 						if not ok_verify:
-							log.warning("[cfgset] verify mismatches:")
+							_loki_log.warning("[cfgset] verify mismatches:")
 							for m in mismatches:
-								log.warning("  - %s", m)
+								_loki_log.warning("  - %s", m)
 							ok, err = False, "verify_failed"
 						else:
-							log.info("[cfgset] verify OK for %d keys", len(cfgData))
+							_loki_log.info("[cfgset] verify OK for %d keys", len(cfgData))
 
 						# Ensure the UBX messages required for our TelemetryAgg are enabled: TIM-TP (qErr + utc flag), MON-SYS (temp), NAV-SAT (counts/CN0), NAV-DOP (PDOP). USB rates are given per measurement cycle
 						await _cfg_msg_usb_rate_ubx(ser, ser_lock, 0x0D, 0x01, 1)  # TIM-TP
@@ -1411,7 +1465,7 @@ async def control_pipe(ser, ser_lock, uid_hex, fwver, protver, hwver, mount_toke
 
 					except Exception as e:
 						ok, err = False, str(e)
-						log.exception("[cfgset] error applying config: %s", e)
+						_loki_log.exception("[cfgset] error applying config: %s", e)
 					
 					# Report result upstream so the server can log/act.
 					if _call_writer and _call_writer.is_open():
@@ -1436,11 +1490,11 @@ async def control_pipe(ser, ser_lock, uid_hex, fwver, protver, hwver, mount_toke
 				# Iterate over inbound messages from the server until the stream ends.
 				async for m in call:
 					which = m.WhichOneof("msg")
-					log.debug("[control] recv: %s", which)
+					_loki_log.debug("[control] recv: %s", which)
 					if m.HasField("ack"):
 						# Server assigns: role, mount, token → start the bidirectional stream.
 						role_enum = m.ack.role
-						log.info("control: ack role=%s", pb.Role.Name(role_enum))
+						_loki_log.info("control: ack role=%s", pb.Role.Name(role_enum))
 						mount_token_holder["mount"] = m.ack.mount
 						mount_token_holder["token"] = m.ack.token
 						mount_token_holder["role"]  = role_enum
@@ -1454,7 +1508,7 @@ async def control_pipe(ser, ser_lock, uid_hex, fwver, protver, hwver, mount_toke
 						set_telem_log_alias(getattr(m.ack, "alias", ""), device_id=uid_hex)
 					
 					elif m.HasField("cfgset"):
-						log.info("control: configuring device (CfgSet)")
+						_loki_log.info("control: configuring device (CfgSet)")
 						await apply_cfgset(m.cfgset)
 					elif m.HasField("ping"):
 						_arm_ping_deadline()  # refresh watchdog deadline
@@ -1502,11 +1556,11 @@ async def control_pipe(ser, ser_lock, uid_hex, fwver, protver, hwver, mount_toke
 			except grpc.aio.AioRpcError as e:
 				# Stream terminated with an RPC-level error (e.g., UNAVAILABLE).
 				stream_broke = True
-				log.error("[control] stream closed: %s - %s", e.code().name, e.details())
+				_loki_log.error("[control] stream closed: %s - %s", e.code().name, e.details())
 			except Exception as e:
 				# Unexpected local error while handling messages.
 				stream_broke = True
-				log.exception("[control] stream error: %s: %s", type(e).__name__, e)
+				_loki_log.exception("[control] stream error: %s: %s", type(e).__name__, e)
 			finally:
 				# Regardless of how the loop ended, stop the watchdog and bidirectional data stream.
 				if _ping_task:
@@ -1518,11 +1572,11 @@ async def control_pipe(ser, ser_lock, uid_hex, fwver, protver, hwver, mount_toke
 					if _telem_stop_evt and not _telem_stop_evt.is_set():
 						_telem_stop_evt.set()
 					await stop_role_task()
-			log.debug("control: loop ended")
+			_loki_log.debug("control: loop ended")
 	except asyncio.CancelledError:
 		# The entire control_pipe task was cancelled by our supervisor.
 		print("control: shutting down...")
-		log.info("control: shutting down…")
+		_loki_log.info("control: shutting down…")
 		return
 
 # ----------------------------------------------------------------------------
@@ -1588,26 +1642,26 @@ async def main():
 		setup_logging(args.verbosity, log_file = _LOG_PATH or None, console = False)
 		#log = logging.getLogger("agent") 
 		print(f'starting up {uid}...')
-		log.info("starting up…")
+		_loki_log.info("starting up…")
 
 		# Run through the four cases to set ctrl/cast addr; default to "0.0.0.0:50051"
 		if args.ctrl_addr and not(args.cast_addr):
 			_CTRL_ADDR = args.ctrl_addr
 			_CAST_ADDR = _CTRL_ADDR
-			log.info(f'[agent] no cast address entered defaulting to control address')
+			_loki_log.info(f'[agent] no cast address entered defaulting to control address')
 
 		elif args.cast_addr and not(args.ctrl_addr):
 			_CAST_ADDR = args.cast_addr
 			_CTRL_ADDR = _CAST_ADDR
-			log.info(f'[agent] no control address entered defaulting to cast address')
+			_loki_log.info(f'[agent] no control address entered defaulting to cast address')
 
 		elif args.ctrl_addr and args.cast_addr:
-			log.info(f'[agent] control and cast addresses entered')
+			_loki_log.info(f'[agent] control and cast addresses entered')
 			_CAST_ADDR = args.cast_addr    # Caster service address (publish/subscribe)
 			_CTRL_ADDR = args.ctrl_addr
 		
-		log.info(f'[agent] cast address {_CAST_ADDR}')
-		log.info(f'[agent] ctrl address {_CTRL_ADDR}')
+		_loki_log.info(f'[agent] cast address {_CAST_ADDR}')
+		_loki_log.info(f'[agent] ctrl address {_CTRL_ADDR}')
 
 		while True:
 			# Discover device and identity (optionally use provided port)
@@ -1619,7 +1673,7 @@ async def main():
 			try:
 				ver = normalize_f9t_versions(read_mon_ver(port, 115200))
 			except Exception as e:
-				log.warning("[identify] MON-VER read failed: %s — using fallbacks", e)
+				_loki_log.warning("[identify] MON-VER read failed: %s — using fallbacks", e)
 				ver = {"fwver": "", "protver": "", "hwver": ""}
 
 			# Open serial and spin up control plane
@@ -1649,7 +1703,7 @@ async def main():
 				ser.close()
 			await asyncio.sleep(2.0)
 	except Exception as e:
-		log.exception("agent error: %s", e)
+		_loki_log.exception("agent error: %s", e)
 		await asyncio.sleep(2.0)
 
 
