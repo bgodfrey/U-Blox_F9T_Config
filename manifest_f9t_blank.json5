@@ -1,0 +1,106 @@
+{
+  global: {
+    apply_to_layers: ["RAM"],
+    verify_layer: "RAM",
+    config: [
+    ]
+  },
+
+  role: {
+    base: {
+      config: [ 
+      ]
+    },
+    receiver: {
+      config: [
+      ]
+    }
+  },
+
+  devices: {
+    "D92EAA4324": {
+      alias: "GATTINI",
+      role: "receiver",
+      serial: { port: "/dev/ttyACM0", baud: 115200 },
+      position: { format: "LLH", lat_deg: 33.3534828, lon_deg: -116.8624633, height_m: 1665.026, acc_m: 0.02 },
+      antenna: {
+        model: "A.120.A.101111",
+        serial: null,
+        cable_length_m: 15,
+        velocity_factor: 0.8,
+        notes: "Pole mount"
+      },
+      config: [
+        
+      ]
+    },
+    "DBA55A41BF": {
+      alias: "RAL",
+      role: "base",
+      serial: { port: "/dev/ttyACM0", baud: 115200 },
+      antenna: {
+        model: "A.120.A.101111",
+        serial: null,
+        cable_length_m: 15,
+        velocity_factor: 0.8,
+        notes: "Pole mount"
+      },
+      config: [
+        
+      ]
+    },
+    
+
+    "9D02FA41BC": {
+      alias: "WINTERS",
+      role: "base",
+      serial: { port: "/dev/ttyACM0", baud: 115200 },
+      position: { format: "LLH", lat_deg: 33.3569335, lon_deg: -116.866145, height_m: 1669.977, acc_m: 0.02 },
+      antenna: {
+        model: "A.120.A.101111",
+        serial: null,
+        cable_length_m: 15,
+        velocity_factor: 0.8,
+        notes: "Dome mount"
+        },
+        config: [
+        
+      ]
+      },
+
+    "5DA30A41BD": {
+      alias: "PTI",
+      role: "receiver",
+      serial: { port: "/dev/ttyACM0", baud: 115200 },
+      position: { format: "LLH", lat_deg: 33.3574696, lon_deg: -116.8641556, height_m: 1662.168, acc_m: 0.5},
+      antenna: {
+        model: "A.120.A.101111",
+        serial: null,
+        cable_length_m: 15,
+        velocity_factor: 0.8,
+        notes: "Dome mount"
+        },
+        config: [
+        
+      ]
+      },
+
+      "D92FB24325": {
+      alias: "FERN",
+      role: "receiver",
+      serial: { port: "/dev/ttyACM0", baud: 115200 },
+      // For receivers, 'position' isn’t used by the device (it’s base-only), OK to keep as metadata if you want
+      position: { format: "LLH", lat_deg: 33.3582889, lon_deg: -116.8653458, height_m: 1654.299, acc_m: 0.6},
+      antenna: {
+        model: "A.120.A.101111",
+        serial: null,
+        cable_length_m: 15,
+        velocity_factor: 0.8,
+        notes: "Dome mount"
+      },
+       config: [
+        
+    ]
+    }
+  }
+}  
