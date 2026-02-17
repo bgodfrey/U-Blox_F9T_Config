@@ -49,6 +49,21 @@
         
       ]
     },
+
+    "1CA16A41BC": {
+      alias: "RAL2",
+      role: "base",
+      serial: { port: "/dev/ttyACM0", baud: 115200 },
+      antenna: {
+        model: "A.120.A.101111",
+        serial: null,
+        cable_length_m: 15,
+        velocity_factor: 0.8,
+        notes: "Pole mount"
+      },
+      config: [  
+      ]
+    },
     
 
     "9D02FA41BC": {
