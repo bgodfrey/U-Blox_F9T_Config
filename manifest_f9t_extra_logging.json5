@@ -128,6 +128,30 @@
         { key: "CFG_MSGOUT_UBX_MON_COMMS_USB", value: 1},
       ]
     },
+
+    "1CA16A41BC": {
+      alias: "RAL",
+      role: "base",
+      serial: { port: "/dev/ttyACM0", baud: 115200 },
+      position: { format: "LLH", lat_deg: 33.3534828, lon_deg: -116.8624633, height_m: 1665.026, acc_m: 0.02 },
+      antenna: {
+        model: "A.120.A.101111",
+        serial: null,
+        cable_length_m: 15,
+        velocity_factor: 0.8,
+        notes: "Pole mount"
+      },
+      config: [
+        { key: "CFG_TP_ANT_CABLEDELAY", value: 93 },
+        { key: "CFG_MSGOUT_UBX_NAV_CLOCK_USB", value: 1},
+        { key: "CFG_MSGOUT_UBX_NAV_PVT_USB", value: 1},
+        { key: "CFG_MSGOUT_UBX_NAV_STATUS_USB",  value: 1 },
+        { key: "CFG_MSGOUT_UBX_NAV_SIG_USB", value: 1},
+        { key: "CFG_HW_ANT_CFG_VOLTCTRL", value: 1},
+        { key: "CFG_MSGOUT_UBX_MON_RF_USB", value: 1},
+        { key: "CFG_MSGOUT_UBX_MON_COMMS_USB", value: 1},
+      ]
+    },
     
 
     "9D02FA41BC": {
