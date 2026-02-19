@@ -45,9 +45,10 @@ def read_mon_ver(port="/dev/ttyACM0", baud=115200, tries=6, read_timeout=0.15, p
     """
     Poll MON-VER a few times and manually parse extensions.
     Returns dict: {model, fwver, protver, hwver, extensions}
-    (Model is forced to ZED-F9T)
+    Model is derived from extensions if present; otherwise None.
     """
-    out = {"model": "ZED-F9T", "fwver": "", "protver": "", "hwver": "", "extensions": []}
+    out = {"model": None, "fwver": "", "protver": "", "hwver": "", "extensions": []}
+
     with Serial(port, baud, timeout=read_timeout) as ser:
         ubr = UBXReader(ser, protfilter=UBX_PROTOCOL)
         poll = UBXMessage("MON", "MON-VER", POLL)
@@ -57,7 +58,7 @@ def read_mon_ver(port="/dev/ttyACM0", baud=115200, tries=6, read_timeout=0.15, p
             ser.write(poll.serialize())
             t0 = time.time()
             msg = None
-            # tight read loop (bounded by read_timeout, not your old long timeout)
+
             while time.time() - t0 < read_timeout:
                 try:
                     _, m = ubr.read()
@@ -71,28 +72,38 @@ def read_mon_ver(port="/dev/ttyACM0", baud=115200, tries=6, read_timeout=0.15, p
                 time.sleep(pause)
                 continue
 
-            # Prefer raw payload parsing so we always get extensions if present
             payload = bytes(getattr(msg, "payload", b""))
             sw, hw, exts = _parse_mon_ver_payload(payload)
-            out["hwver"] = hw or out["hwver"]
+
+            if hw:
+                out["hwver"] = hw
             if exts:
                 out["extensions"] = exts
+
                 for s in exts:
+                    # common keys seen in u-blox extensions
                     if s.startswith("FWVER=") and not out["fwver"]:
                         out["fwver"] = s.split("=", 1)[1]
                     elif s.startswith("PROTVER=") and not out["protver"]:
                         out["protver"] = s.split("=", 1)[1]
-            # fallback for fwver when FWVER=... was absent
-            if not out["fwver"] and sw:
-                out["fwver"] = sw  # e.g., "EXT CORE 1.00 (3fda8e)"
+                    elif s.startswith("MOD=") and out["model"] is None:
+                        out["model"] = s.split("=", 1)[1]
+                    elif s.startswith("MODEL=") and out["model"] is None:
+                        out["model"] = s.split("=", 1)[1]
+                    elif s.startswith("HW=") and not out["hwver"]:
+                        out["hwver"] = s.split("=", 1)[1]
 
-            # stop once we’ve got at least hwver + some fw info; protver may remain empty
+            if not out["fwver"] and sw:
+                out["fwver"] = sw
+
+            # If we got anything meaningful, stop
             if out["fwver"] and out["hwver"]:
                 break
 
             time.sleep(pause)
 
     return out
+
 
 # Optional: map EXT CORE -> TIM version / protocol if you maintain a table.
 # Example skeleton; fill in as you collect values from your fleet.
