@@ -102,7 +102,14 @@
         notes: "Pole mount"
       },
       config: [
-        { key: "CFG_TP_ANT_CABLEDELAY", value: 93 }
+        { key: "CFG_TP_ANT_CABLEDELAY", value: 93 },
+        { key: "CFG_MSGOUT_UBX_NAV_CLOCK_USB", value: 1},
+        { key: "CFG_MSGOUT_UBX_NAV_PVT_USB", value: 1},
+        { key: "CFG_MSGOUT_UBX_NAV_STATUS_USB",  value: 1 },
+        { key: "CFG_MSGOUT_UBX_NAV_SIG_USB", value: 1},
+        { key: "CFG_HW_ANT_CFG_VOLTCTRL", value: 1},
+        { key: "CFG_MSGOUT_UBX_MON_RF_USB", value: 1},
+        { key: "CFG_MSGOUT_UBX_MON_COMMS_USB", value: 1},
       ]
     },
     "DBA55A41BF": {
