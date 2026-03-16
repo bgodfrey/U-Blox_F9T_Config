@@ -48,8 +48,8 @@ def find_repo_root() -> Path:
 RPC_ROOT = find_repo_root() / "src" / "panoseti_grpc" / "generated"
 sys.path.insert(0, str(RPC_ROOT))
 
-import panoseti.telemetry.telemetry_pb2 as tpb
-import panoseti.telemetry.telemetry_pb2_grpc as tgrpc
+#import panoseti.telemetry.telemetry_pb2 as tpb
+#import panoseti.telemetry.telemetry_pb2_grpc as tgrpc
 
 # ----------------------------- basic config ---------------------------------
 REPO_ROOT = Path(__file__).resolve().parent
@@ -90,8 +90,8 @@ PUSH_INFLIGHT: set[tuple[str, int]] = set()  # (device_id, version) during async
 LATEST_TELEM: dict[str, dict] = {}     # device_id -> last Telemetry dict
 LAST_SEEN = {}
 
-TELEM_FWD_Q: asyncio.Queue = asyncio.Queue(maxsize=5000)  # bounded
-_telem_fwd_task: asyncio.Task | None = None
+#TELEM_FWD_Q: asyncio.Queue = asyncio.Queue(maxsize=5000)  # bounded
+#_telem_fwd_task: asyncio.Task | None = None
 
 # ------------------------------ helpers -------------------------------------
 
@@ -299,7 +299,7 @@ async def heartbeat(out_q: asyncio.Queue, period: float = 5.0) -> None:
 	except asyncio.CancelledError:
 		pass
 
-
+'''
 async def telem_forwarder_loop():
 	"""
 	Drain TELEM_FWD_Q and forward to Telemetry.ReportStatus (unary).
@@ -337,6 +337,7 @@ async def telem_forwarder_loop():
 						"glo_used": int(item.get("glo_used", 0)),
 					}
 
+					
 					req = tpb.StatusRequest(
 						device_type=item.get("device_type", "gnss"),
 						device_id=item.get("device_id", "UNKNOWN"),
@@ -351,7 +352,7 @@ async def telem_forwarder_loop():
 							extra_data=_struct_from_dict(extra),
 						),
 					)
-
+					
 					try:
 						resp = await stub.ReportStatus(req, timeout=2.0)
 						if not resp.success:
@@ -361,6 +362,7 @@ async def telem_forwarder_loop():
 						log.warning("[telem_fwd] ReportStatus rpc failed: %s %s", e.code().name, e.details())
 						# optional: push item back? usually no; telemetry is best-effort
 						raise
+					
 
 		except asyncio.CancelledError:
 			raise
@@ -368,7 +370,7 @@ async def telem_forwarder_loop():
 			log.warning("[telem_fwd] channel/loop error: %r; retrying in %.1fs", e, backoff)
 			await asyncio.sleep(backoff)
 			backoff = min(backoff * 2, 10.0)
-
+'''
 # ------------------------------ RPC handlers --------------------------------
 
 '''
@@ -764,7 +766,7 @@ async def serve(addr: str = "0.0.0.0:50051") -> None:
 	
 	# Start accepting RPCs
 	await server.start()
-	_telem_fwd_task = asyncio.create_task(telem_forwarder_loop())
+	#_telem_fwd_task = asyncio.create_task(telem_forwarder_loop())
 
 	# --- Wait for shutdown condition ---
 
