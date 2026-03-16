@@ -742,7 +742,7 @@ Lifecycle:
 	   - stop the gRPC server with a grace period.
 """
 async def serve(addr: str = "0.0.0.0:50051") -> None:
-	global _telem_fwd_task
+	#global _telem_fwd_task
 	stop = asyncio.Event() # will be set on SIGINT/SIGTERM
 	install_signal_handlers(stop) # attach signal handlers to set `stop`
 
@@ -789,12 +789,13 @@ async def serve(addr: str = "0.0.0.0:50051") -> None:
 		# Ask gRPC to stop accepting new calls and gracefully drain existing ones for up to 3s.
 		await server.stop(grace=3.0)
 
+		'''
 		if _telem_fwd_task:
 			_telem_fwd_task.cancel()
 			with contextlib.suppress(asyncio.CancelledError):
 				await _telem_fwd_task
-
-
+		'''
+	
 	# Await server termination task (ignore exceptions during final cleanup)
 	with contextlib.suppress(Exception):
 		await wait_task
