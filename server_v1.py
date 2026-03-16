@@ -13,8 +13,13 @@ following:
 - Ping the devices so the F9T devices know if the headnode can talk with them
 """
 from __future__ import annotations
+
+
 from datetime import datetime, timezone
 from logging_setup import setup_logging
+from google.protobuf.struct_pb2 import Struct
+from google.protobuf.timestamp_pb2 import Timestamp
+from pathlib import Path
 
 import argparse
 import asyncio
@@ -24,14 +29,27 @@ import logging
 import os
 import shutil
 import signal
+import subprocess
+import sys
 import time
-from pathlib import Path
 
 import grpc
 import json5
 
 import caster_setup_pb2 as pb
 import caster_setup_pb2_grpc as rpc
+
+def find_repo_root() -> Path:
+	try:
+		return Path(subprocess.check_output(["git", "rev-parse", "--show-toplevel"], stderr=subprocess.DEVNULL, universal_newlines=True,).strip())
+	except Exception:
+		return Path(__file__).resolve().parent
+
+RPC_ROOT = find_repo_root() / "src" / "panoseti_grpc" / "generated"
+sys.path.insert(0, str(RPC_ROOT))
+
+import panoseti.telemetry.telemetry_pb2 as tpb
+import panoseti.telemetry.telemetry_pb2_grpc as tgrpc
 
 # ----------------------------- basic config ---------------------------------
 REPO_ROOT = Path(__file__).resolve().parent
@@ -42,6 +60,7 @@ TELEM_DIR   = REPO_ROOT / "telemetry"
 LOGGING_DIR = REPO_ROOT / "logging"
 
 TELEM_DIR.mkdir(parents=True, exist_ok=True)
+TELEM_SVC_ADDR = os.getenv("TELEM_SVC_ADDR", "127.0.0.1:50052")
 LOGGING_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -70,6 +89,9 @@ PUSHED_CFG: dict[str, int] = {}        # device_id -> last pushed manifest versi
 PUSH_INFLIGHT: set[tuple[str, int]] = set()  # (device_id, version) during async push
 LATEST_TELEM: dict[str, dict] = {}     # device_id -> last Telemetry dict
 LAST_SEEN = {}
+
+TELEM_FWD_Q: asyncio.Queue = asyncio.Queue(maxsize=5000)  # bounded
+_telem_fwd_task: asyncio.Task | None = None
 
 # ------------------------------ helpers -------------------------------------
 
@@ -137,6 +159,11 @@ class Hub:
 
 
 # ----------------------- manifest → CfgSet helpers --------------------------
+
+def _struct_from_dict(d: dict) -> Struct:
+	s = Struct()
+	s.update(d)
+	return s
 
 # Converts a config val from what is given in the manifest. The agent figures out how to convert this
 # into a register value that is written to the device
@@ -273,6 +300,75 @@ async def heartbeat(out_q: asyncio.Queue, period: float = 5.0) -> None:
 		pass
 
 
+async def telem_forwarder_loop():
+	"""
+	Drain TELEM_FWD_Q and forward to Telemetry.ReportStatus (unary).
+	Never blocks Control.Pipe; drops on overload.
+	"""
+	# NOTE: keepalive here is optional; unary calls are short-lived.
+	opts = [
+		("grpc.keepalive_time_ms", 60000),
+		("grpc.keepalive_timeout_ms", 10000),
+		("grpc.keepalive_permit_without_calls", 1),
+	]
+
+	backoff = 0.5
+	while True:
+		try:
+			async with grpc.aio.insecure_channel(TELEM_SVC_ADDR, options=opts) as ch:
+				stub = tgrpc.TelemetryStub(ch)
+				backoff = 0.5
+
+				while True:
+					item = await TELEM_FWD_Q.get()
+
+					# Build google.protobuf.Timestamp (server-side "now")
+					ts = Timestamp()
+					ts.FromMilliseconds(int(time.time() * 1000))
+
+					# Put the “extra” stuff in extra_data so GnssPayload stays stable
+					extra = {
+						"alias": item.get("alias", ""),
+						"temp_c": float(item.get("temp_c", 0.0)),
+						"pdop": float(item.get("pdop", 0.0)),
+						"gps_used": int(item.get("gps_used", 0)),
+						"gal_used": int(item.get("gal_used", 0)),
+						"bds_used": int(item.get("bds_used", 0)),
+						"glo_used": int(item.get("glo_used", 0)),
+					}
+
+					req = tpb.StatusRequest(
+						device_type=item.get("device_type", "gnss"),
+						device_id=item.get("device_id", "UNKNOWN"),
+						timestamp=ts,
+						gnss=tpb.GnssPayload(
+							unix_ms=int(item.get("unix_ms", 0)),
+							qerr_ns=float(item.get("qerr_ns", 0.0)),
+							utc_ok=bool(item.get("utc_ok", False)),
+							num_vis=int(item.get("num_vis", 0)),
+							num_used=int(item.get("num_used", 0)),
+							avg_cno=float(item.get("avg_cno", 0.0)),
+							extra_data=_struct_from_dict(extra),
+						),
+					)
+
+					try:
+						resp = await stub.ReportStatus(req, timeout=2.0)
+						if not resp.success:
+							# don’t explode; just log
+							log.warning("[telem_fwd] ReportStatus rejected: %s", resp.message)
+					except grpc.aio.AioRpcError as e:
+						log.warning("[telem_fwd] ReportStatus rpc failed: %s %s", e.code().name, e.details())
+						# optional: push item back? usually no; telemetry is best-effort
+						raise
+
+		except asyncio.CancelledError:
+			raise
+		except Exception as e:
+			log.warning("[telem_fwd] channel/loop error: %r; retrying in %.1fs", e, backoff)
+			await asyncio.sleep(backoff)
+			backoff = min(backoff * 2, 10.0)
+
 # ------------------------------ RPC handlers --------------------------------
 
 '''
@@ -339,6 +435,7 @@ class CasterServicer(rpc.CasterServicer):
 				yield  pb.RtcmFrame(data=frame)
 		finally:
 			self.hub.detach(request.mount, q)
+
 
 
 # Bidirectional stream allowing for configuration of devices, ping-ing, and telemetry data
@@ -504,10 +601,28 @@ class ControlServicer(rpc.ControlServicer):
 								"glo_used": int(getattr(t, "glo_used", 0)),
 								"avg_cno": round(float(getattr(t, "avg_cno", 0.0)),4),
 								"pdop": round(float(getattr(t, "pdop", 0.0)),4),
-							}
-							
+							}							
 							# Update in-memory cache and append a JSONL log row (if we know which device)
 							if device_id:
+								# --- enqueue for telemetry service forwarding (best-effort) ---
+								item = {
+									"device_type": "gnss",
+									"device_id": device_id,
+									"alias": alias,
+									**rec,   # unix_ms,temp_c,qerr_ns,utc_ok,num_vis,num_used,gps_used,...,pdop
+								}
+								try:
+									TELEM_FWD_Q.put_nowait(item)
+								except asyncio.QueueFull:
+									# drop-oldest so we keep latest (ring-ish)
+									try:
+										TELEM_FWD_Q.get_nowait()
+									except asyncio.QueueEmpty:
+										pass
+									try:
+										TELEM_FWD_Q.put_nowait(item)
+									except asyncio.QueueFull:
+										pass
 								LATEST_TELEM[device_id] = rec
 								#alias = getattr(m.ack, "alias", "") if hasattr(m, "ack") else ""
 								jlog("telem", device_id, alias = alias, **rec)
@@ -625,6 +740,7 @@ Lifecycle:
 	   - stop the gRPC server with a grace period.
 """
 async def serve(addr: str = "0.0.0.0:50051") -> None:
+	global _telem_fwd_task
 	stop = asyncio.Event() # will be set on SIGINT/SIGTERM
 	install_signal_handlers(stop) # attach signal handlers to set `stop`
 
@@ -648,6 +764,7 @@ async def serve(addr: str = "0.0.0.0:50051") -> None:
 	
 	# Start accepting RPCs
 	await server.start()
+	_telem_fwd_task = asyncio.create_task(telem_forwarder_loop())
 
 	# --- Wait for shutdown condition ---
 
@@ -669,6 +786,12 @@ async def serve(addr: str = "0.0.0.0:50051") -> None:
 	
 		# Ask gRPC to stop accepting new calls and gracefully drain existing ones for up to 3s.
 		await server.stop(grace=3.0)
+
+		if _telem_fwd_task:
+			_telem_fwd_task.cancel()
+			with contextlib.suppress(asyncio.CancelledError):
+				await _telem_fwd_task
+
 
 	# Await server termination task (ignore exceptions during final cleanup)
 	with contextlib.suppress(Exception):
