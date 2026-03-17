@@ -613,6 +613,7 @@ class ControlServicer(rpc.ControlServicer):
 									"alias": alias,
 									**rec,   # unix_ms,temp_c,qerr_ns,utc_ok,num_vis,num_used,gps_used,...,pdop
 								}
+								'''
 								try:
 									TELEM_FWD_Q.put_nowait(item)
 								except asyncio.QueueFull:
@@ -625,6 +626,7 @@ class ControlServicer(rpc.ControlServicer):
 										TELEM_FWD_Q.put_nowait(item)
 									except asyncio.QueueFull:
 										pass
+								'''
 								LATEST_TELEM[device_id] = rec
 								#alias = getattr(m.ack, "alias", "") if hasattr(m, "ack") else ""
 								jlog("telem", device_id, alias = alias, **rec)
