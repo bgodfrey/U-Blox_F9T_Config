@@ -16,7 +16,7 @@ from __future__ import annotations
 
 
 from datetime import datetime, timezone
-from logging_setup import setup_logging
+from panoseti_grpc.telemetry.logger import get_logger
 from google.protobuf.struct_pb2 import Struct
 from google.protobuf.timestamp_pb2 import Timestamp
 from pathlib import Path
@@ -48,7 +48,7 @@ def find_repo_root() -> Path:
 RPC_ROOT = find_repo_root() / "src" / "panoseti_grpc" / "generated"
 sys.path.insert(0, str(RPC_ROOT))
 
-from panoseti_grpc.telemetry.client import make_grpc_logger
+
 import panoseti.telemetry.telemetry_pb2 as tpb
 import panoseti.telemetry.telemetry_pb2_grpc as tgrpc
 
@@ -95,11 +95,6 @@ LAST_SEEN = {}
 TELEM_FWD_Q: asyncio.Queue = asyncio.Queue(maxsize=5000)  # bounded
 _telem_fwd_task: asyncio.Task | None = None
 
-LOKI_LOGGER = make_grpc_logger(
-    service_name="GNSS_Control", 
-    level=logging.DEBUG,
-    attach_to_root=True
-)
 
 # ------------------------------ helpers -------------------------------------
 
@@ -811,8 +806,15 @@ if __name__ == "__main__":
 	# Entrypoint: Run the server’s main function and allow KeyboardInterrupt to exit cleanly.
 	try:
 		args = parse_args()
-		setup_logging(args.verbosity, log_file = _LOG_PATH_LOGGING or None, console = False)
-		log = logging.getLogger("server")   # or "server"
+		_LEVELS = {0: logging.ERROR, 1: logging.WARNING, 2: logging.INFO, 3: logging.DEBUG}
+		_level = _LEVELS.get(max(0, min(args.verbosity, 3)), logging.INFO)
+		log = get_logger(
+			"GNSS_Control",
+			level=_level,
+			console=True,
+			log_dir=str(LOGGING_DIR),
+			grpc_enabled=True,
+		)
 		log.info("starting up…")
 		if args.config:
 			DEFAULT_POLICY['manifest'] = args.config
