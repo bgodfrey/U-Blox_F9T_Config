@@ -579,12 +579,6 @@ def set_telem_log_alias(alias: str, device_id: str = "") -> None:
 
 	_TELEM_PATH = new_path
 
-# keep letters, numbers, dash, underscore; collapse others to '_'
-def _sanitize(name: str, fallback: str = "UNKNOWN") -> str:
-	s = re.sub(r"[^A-Za-z0-9._-]+", "_", (name or "").strip())
-	return s or fallback
-
-
 # Append one JSON line without blocking the event loop.
 async def _append_jsonl(record: dict):
 	line = json5.dumps(record, separators=(",", ":")) + "\n"
@@ -650,9 +644,9 @@ async def _valget_verify(ser, ser_lock, cfgData, layer: str = "RAM", timeout_per
 		if isinstance(rec, dict):
 			# some versions: {"keyID": 271646751, ...}
 			return int(rec["keyID"])
-			if kid is None:
-				raise KeyError(f"CFG entry for {name} has no keyID field")
-			return int(kid)
+#			if kid is None:
+#				raise KeyError(f"CFG entry for {name} has no keyID field")
+#			return int(kid)
 		# common variant: tuple where index 0 is keyID (e.g., (271646751, 'L001', ...))
 		if isinstance(rec, (tuple, list)) and len(rec) >= 1:
 			return int(rec[0])
@@ -736,7 +730,7 @@ async def _valget_verify(ser, ser_lock, cfgData, layer: str = "RAM", timeout_per
 					# Stop early if we have all keys from this chunk
 					if all(n in got_by_name for n in chunk_names):
 						break
-					continue
+						continue
 				# If quiet for 300ms after last relevant frame, assume done
 					if last_valget_time and (time.time() - last_valget_time) > 0.3:
 						break

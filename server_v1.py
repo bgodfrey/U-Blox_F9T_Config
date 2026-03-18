@@ -299,78 +299,6 @@ async def heartbeat(out_q: asyncio.Queue, period: float = 5.0) -> None:
 	except asyncio.CancelledError:
 		pass
 
-'''
-async def telem_forwarder_loop():
-	"""
-	Drain TELEM_FWD_Q and forward to Telemetry.ReportStatus (unary).
-	Never blocks Control.Pipe; drops on overload.
-	"""
-	# NOTE: keepalive here is optional; unary calls are short-lived.
-	opts = [
-		("grpc.keepalive_time_ms", 60000),
-		("grpc.keepalive_timeout_ms", 10000),
-		("grpc.keepalive_permit_without_calls", 1),
-	]
-
-	backoff = 0.5
-	while True:
-		try:
-			async with grpc.aio.insecure_channel(TELEM_SVC_ADDR, options=opts) as ch:
-				stub = tgrpc.TelemetryStub(ch)
-				backoff = 0.5
-
-				while True:
-					item = await TELEM_FWD_Q.get()
-
-					# Build google.protobuf.Timestamp (server-side "now")
-					ts = Timestamp()
-					ts.FromMilliseconds(int(time.time() * 1000))
-
-					# Put the “extra” stuff in extra_data so GnssPayload stays stable
-					extra = {
-						"alias": item.get("alias", ""),
-						"temp_c": float(item.get("temp_c", 0.0)),
-						"pdop": float(item.get("pdop", 0.0)),
-						"gps_used": int(item.get("gps_used", 0)),
-						"gal_used": int(item.get("gal_used", 0)),
-						"bds_used": int(item.get("bds_used", 0)),
-						"glo_used": int(item.get("glo_used", 0)),
-					}
-
-					
-					req = tpb.StatusRequest(
-						device_type=item.get("device_type", "gnss"),
-						device_id=item.get("device_id", "UNKNOWN"),
-						timestamp=ts,
-						gnss=tpb.GnssPayload(
-							unix_ms=int(item.get("unix_ms", 0)),
-							qerr_ns=float(item.get("qerr_ns", 0.0)),
-							utc_ok=bool(item.get("utc_ok", False)),
-							num_vis=int(item.get("num_vis", 0)),
-							num_used=int(item.get("num_used", 0)),
-							avg_cno=float(item.get("avg_cno", 0.0)),
-							extra_data=_struct_from_dict(extra),
-						),
-					)
-					
-					try:
-						resp = await stub.ReportStatus(req, timeout=2.0)
-						if not resp.success:
-							# don’t explode; just log
-							log.warning("[telem_fwd] ReportStatus rejected: %s", resp.message)
-					except grpc.aio.AioRpcError as e:
-						log.warning("[telem_fwd] ReportStatus rpc failed: %s %s", e.code().name, e.details())
-						# optional: push item back? usually no; telemetry is best-effort
-						raise
-					
-
-		except asyncio.CancelledError:
-			raise
-		except Exception as e:
-			log.warning("[telem_fwd] channel/loop error: %r; retrying in %.1fs", e, backoff)
-			await asyncio.sleep(backoff)
-			backoff = min(backoff * 2, 10.0)
-'''
 # ------------------------------ RPC handlers --------------------------------
 
 '''
@@ -613,20 +541,7 @@ class ControlServicer(rpc.ControlServicer):
 									"alias": alias,
 									**rec,   # unix_ms,temp_c,qerr_ns,utc_ok,num_vis,num_used,gps_used,...,pdop
 								}
-								'''
-								try:
-									TELEM_FWD_Q.put_nowait(item)
-								except asyncio.QueueFull:
-									# drop-oldest so we keep latest (ring-ish)
-									try:
-										TELEM_FWD_Q.get_nowait()
-									except asyncio.QueueEmpty:
-										pass
-									try:
-										TELEM_FWD_Q.put_nowait(item)
-									except asyncio.QueueFull:
-										pass
-								'''
+
 								LATEST_TELEM[device_id] = rec
 								#alias = getattr(m.ack, "alias", "") if hasattr(m, "ack") else ""
 								jlog("telem", device_id, alias = alias, **rec)
@@ -768,7 +683,6 @@ async def serve(addr: str = "0.0.0.0:50051") -> None:
 	
 	# Start accepting RPCs
 	await server.start()
-	#_telem_fwd_task = asyncio.create_task(telem_forwarder_loop())
 
 	# --- Wait for shutdown condition ---
 
