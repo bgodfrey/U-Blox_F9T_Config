@@ -38,7 +38,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import datetime, timezone
 from grpc.aio import AioRpcError
-from logging_setup import setup_logging
+from panoseti_grpc.telemetry.logger import get_logger
 from serial import Serial
 # Requires:
 from pyubx2.exceptions import UBXMessageError, UBXParseError, UBXStreamError, UBXTypeError
@@ -109,11 +109,7 @@ _serial_stop_evt: Optional[asyncio.Event] = None
 _shutdown_evt   = asyncio.Event()                   # Whole‑agent shutdown (global)
 
 _role = {"task": None, "name": None}                # Active role task + label
-_loki_log = make_grpc_logger(
-    service_name="GNSS_Control_Agent", 
-    level=logging.DEBUG,
-    attach_to_root=True
-)
+_loki_log = log  # alias; reconfigured with full Tier 2 handlers in main()
 
 # Mapping from EXT CORE strings → friendly TIM/PROT versions
 # As of November 2025, all F9T modules have the 2.20 firmware released January 2022
@@ -1639,8 +1635,15 @@ async def main():
 		
 		port, uid = discover_f9x(port = args.port)
 		set_logging_alias(uid)
-		setup_logging(args.verbosity, log_file = _LOG_PATH or None, console = False)
-		#log = logging.getLogger("agent") 
+		_LEVELS = {0: logging.ERROR, 1: logging.WARNING, 2: logging.INFO, 3: logging.DEBUG}
+		_level = _LEVELS.get(max(0, min(args.verbosity, 3)), logging.INFO)
+		get_logger(
+			"agent",
+			level=_level,
+			console=True,
+			log_dir=LOG_DIR,
+			grpc_enabled=True,
+		)
 		print(f'starting up {uid}...')
 		_loki_log.info("starting up…")
 
