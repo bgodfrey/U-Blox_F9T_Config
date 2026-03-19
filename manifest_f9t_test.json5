@@ -1,0 +1,31 @@
+// manifest_f9t_test.json5
+// Minimal test manifest for fake_agent.py integration tests.
+// Contains no real GNSS hardware config — fake agents acknowledge CfgSet
+// without applying any settings to a device.
+{
+  global: {
+    apply_to_layers: ["RAM"],
+    verify_layer: "RAM",
+    config: []
+  },
+  role: {
+    base: {
+      config: []
+    },
+    receiver: {
+      config: []
+    }
+  },
+  devices: {
+    "FAKE_BASE_001": {
+      alias: "FAKE-BASE",
+      role: "base",
+      config: []
+    },
+    "FAKE_RECV_001": {
+      alias: "FAKE-RECV",
+      role: "receiver",
+      config: []
+    }
+  }
+}
