@@ -92,7 +92,7 @@ PUSH_INFLIGHT: set[tuple[str, int]] = set()  # (device_id, version) during async
 LATEST_TELEM: dict[str, dict] = {}     # device_id -> last Telemetry dict
 LAST_SEEN = {}
 
-TELEM_FWD_Q: asyncio.Queue = asyncio.Queue(maxsize=5000)  # bounded
+TELEM_FWD_Q: asyncio.Queue  # initialized inside serve() to bind to the running event loop
 _telem_fwd_task: asyncio.Task | None = None
 
 
@@ -302,7 +302,6 @@ async def heartbeat(out_q: asyncio.Queue, period: float = 5.0) -> None:
 	except asyncio.CancelledError:
 		pass
 
-# Note: February 2026 not using this
 async def telem_forwarder_loop():
 	"""
 	Drain TELEM_FWD_Q and forward to Telemetry.ReportStatus (unary).
@@ -743,7 +742,8 @@ Lifecycle:
 	   - stop the gRPC server with a grace period.
 """
 async def serve(addr: str = "0.0.0.0:50051") -> None:
-	global _telem_fwd_task
+	global _telem_fwd_task, TELEM_FWD_Q
+	TELEM_FWD_Q = asyncio.Queue(maxsize=5000)  # create inside running loop (Python 3.9 compat)
 	stop = asyncio.Event() # will be set on SIGINT/SIGTERM
 	install_signal_handlers(stop) # attach signal handlers to set `stop`
 

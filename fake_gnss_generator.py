@@ -17,7 +17,7 @@ RTCM3 Frame layout:
 """
 
 import struct
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +135,7 @@ def make_mon_sys(temp_c: float = 25.0) -> bytes:
 
 
 def make_nav_sat(
-    satellites: List[dict] | None = None,
+    satellites: Optional[List[dict]] = None,
     itow: int = 0,
 ) -> bytes:
     """NAV-SAT frame.
