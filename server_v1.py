@@ -328,9 +328,16 @@ async def telem_forwarder_loop():
 					ts = Timestamp()
 					ts.FromMilliseconds(int(time.time() * 1000))
 
-					# Put the “extra” stuff in extra_data so GnssPayload stays stable
+					# GnssPayload proto has: satellites, lat, lon, fix_mode, extra_data.
+					# Map agent telemetry to these fields; everything else goes in extra_data.
 					extra = {
 						"alias": item.get("alias", ""),
+						"unix_ms": int(item.get("unix_ms", 0)),
+						"qerr_ns": float(item.get("qerr_ns", 0.0)),
+						"utc_ok": bool(item.get("utc_ok", False)),
+						"num_vis": int(item.get("num_vis", 0)),
+						"num_used": int(item.get("num_used", 0)),
+						"avg_cno": float(item.get("avg_cno", 0.0)),
 						"temp_c": float(item.get("temp_c", 0.0)),
 						"pdop": float(item.get("pdop", 0.0)),
 						"gps_used": int(item.get("gps_used", 0)),
@@ -344,12 +351,10 @@ async def telem_forwarder_loop():
 						device_id=item.get("device_id", "UNKNOWN"),
 						timestamp=ts,
 						gnss=tpb.GnssPayload(
-							unix_ms=int(item.get("unix_ms", 0)),
-							qerr_ns=float(item.get("qerr_ns", 0.0)),
-							utc_ok=bool(item.get("utc_ok", False)),
-							num_vis=int(item.get("num_vis", 0)),
-							num_used=int(item.get("num_used", 0)),
-							avg_cno=float(item.get("avg_cno", 0.0)),
+							satellites=int(item.get("num_vis", 0)),
+							lat=0.0,
+							lon=0.0,
+							fix_mode="3D" if item.get("utc_ok") else "none",
 							extra_data=_struct_from_dict(extra),
 						),
 					)

@@ -127,33 +127,7 @@ class TelemetryAgg:
             self.avg_cno = (cno_sum / n) if n else 0.0
 
 
-# ── gRPC stream tasks ─────────────────────────────────────────────────────────
-
-async def tx_loop(
-    call: grpc.aio.StreamStreamCall,
-    out_q: asyncio.Queue,
-    stop: asyncio.Event,
-) -> None:
-    """Drain *out_q* and write each message to the Control.Pipe stream.
-    Terminates when *stop* is set and the queue is empty, or on None sentinel.
-    """
-    try:
-        while not (stop.is_set() and out_q.empty()):
-            try:
-                msg = await asyncio.wait_for(out_q.get(), timeout=0.3)
-            except asyncio.TimeoutError:
-                continue
-            if msg is None:
-                break
-            await call.write(msg)
-    except grpc.aio.AioRpcError as e:
-        log.warning("tx_loop gRPC error: %s %s", e.code().name, e.details())
-    except Exception as e:
-        log.warning("tx_loop error: %s", e)
-    finally:
-        with contextlib.suppress(Exception):
-            await call.done_writing()
-
+# ── gRPC stream helpers ─────────────────────────────────────────────────────
 
 async def rx_loop(
     call: grpc.aio.StreamStreamCall,
@@ -161,20 +135,15 @@ async def rx_loop(
     stop: asyncio.Event,
     device_id: str,
 ) -> None:
-    """Read ControlMsg messages from the server.
+    """Read ControlMsg messages from the server (response stream).
 
     - Ping    → log (agent doesn't need to respond)
     - CfgSet  → enqueue ApplyResult(ok=True)
     - EOF     → exit
     """
     try:
-        while not stop.is_set():
-            try:
-                msg = await asyncio.wait_for(call.read(), timeout=1.0)
-            except asyncio.TimeoutError:
-                continue
-            if msg is grpc.aio.EOF:
-                log.info("[%s] server closed stream", device_id)
+        async for msg in call:
+            if stop.is_set():
                 break
             if msg.HasField("ping"):
                 log.debug("[%s] Ping ts=%d", device_id, msg.ping.unix_ms)
@@ -187,7 +156,6 @@ async def rx_loop(
                     result=pb.ApplyResult(name="CfgSet", ok=True)
                 ))
             elif msg.HasField("ack"):
-                # Should not happen after initial handshake
                 log.debug("[%s] unexpected duplicate ACK", device_id)
             else:
                 log.debug("[%s] rx: %s", device_id, msg.WhichOneof("body"))
@@ -196,6 +164,8 @@ async def rx_loop(
                     e.code().name, e.details())
     except Exception as e:
         log.warning("[%s] rx_loop error: %s", device_id, e)
+    finally:
+        log.info("[%s] rx_loop finished", device_id)
 
 
 async def telem_loop(
@@ -207,11 +177,12 @@ async def telem_loop(
     """Generate fake UBX telemetry and emit ControlMsg(telem=...) every ~1 s."""
     agg = TelemetryAgg()
     scenario = gen.scenario_good_fix(qerr_ps=2000, temp_c=38.5, pdop=1.4, num_sats=10)
-    frame_idx = 0
+    # Feed all frames once so the first snapshot has complete data
+    for frame in scenario:
+        agg.feed_ubx(frame)
+    frame_idx = len(scenario)
     try:
         while not stop.is_set():
-            agg.feed_ubx(scenario[frame_idx % len(scenario)])
-            frame_idx += 1
             t = pb.Telemetry(
                 unix_ms  = int(time.time() * 1000),
                 temp_c   = agg.temp_c,
@@ -348,7 +319,11 @@ async def run_agent(
     run_secs: float,
     wait_for_server: float = 30.0,
 ) -> None:
-    """Connect to server_v1, handshake, then run role + telemetry tasks."""
+    """Connect to server_v1, handshake, then run role + telemetry tasks.
+
+    Uses a request async-iterator (instead of call.write) to keep the
+    Control.Pipe send-side open for the lifetime of the agent.
+    """
     opts = [
         ("grpc.keepalive_time_ms",          30_000),
         ("grpc.keepalive_timeout_ms",        10_000),
@@ -373,27 +348,46 @@ async def run_agent(
 
     log.info("[%s] server ready, opening Control.Pipe", device_id)
 
-    async with grpc.aio.insecure_channel(ctrl_addr, options=opts) as ch:
-        stub = rpc.ControlStub(ch)
-        call = stub.Pipe()
+    stop  = asyncio.Event()
+    out_q: asyncio.Queue = asyncio.Queue(maxsize=300)
 
-        # ── 1. Send HELLO ─────────────────────────────────────────────────
-        await call.write(pb.ControlMsg(hello=pb.DeviceHello(
+    # ── Build the request async-iterator ─────────────────────────────────────
+    # The iterator first yields HELLO, then drains out_q for telem / results.
+    # It stays alive until stop is set and the queue is empty (or None sentinel).
+    async def request_iter():
+        # 1. Send HELLO
+        yield pb.ControlMsg(hello=pb.DeviceHello(
             device_id = device_id,
             model     = "ZED-F9T",
             fwver     = "TIM 2.20",
             protver   = "29.20",
             hwver     = "00190000",
             label     = "fake-agent",
-        )))
+        ))
         log.info("[%s] HELLO sent", device_id)
 
-        # ── 2. Receive HelloAck ───────────────────────────────────────────
+        # 2. Drain out_q (telem messages, CfgSet acks, etc.)
+        while not (stop.is_set() and out_q.empty()):
+            try:
+                msg = await asyncio.wait_for(out_q.get(), timeout=0.5)
+            except asyncio.TimeoutError:
+                continue
+            if msg is None:
+                break
+            yield msg
+
+    async with grpc.aio.insecure_channel(ctrl_addr, options=opts) as ch:
+        stub = rpc.ControlStub(ch)
+        call = stub.Pipe(request_iter())
+
+        # ── 1. Receive HelloAck (first message from server) ──────────────
         msg = await call.read()
-        if not msg.HasField("ack"):
+        if msg is grpc.aio.EOF or not msg.HasField("ack"):
             log.error("[%s] expected HelloAck, got %s — aborting",
-                      device_id, msg.WhichOneof("body"))
-            await call.done_writing()
+                      device_id,
+                      msg.WhichOneof("body") if msg is not grpc.aio.EOF else "EOF")
+            stop.set()
+            await out_q.put(None)
             return
 
         ack   = msg.ack
@@ -408,10 +402,7 @@ async def run_agent(
             mount, alias, ack.config_version,
         )
 
-        # ── 3. Run concurrent tasks ───────────────────────────────────────
-        stop  = asyncio.Event()
-        out_q = asyncio.Queue(maxsize=300)
-
+        # ── 2. Run concurrent tasks ──────────────────────────────────────
         role_coro = (
             publish_loop(cast_addr, mount, token, stop, device_id)
             if role == pb.Role.BASE
@@ -419,7 +410,6 @@ async def run_agent(
         )
 
         tasks = [
-            asyncio.create_task(tx_loop(call, out_q, stop)),
             asyncio.create_task(rx_loop(call, out_q, stop, device_id)),
             asyncio.create_task(telem_loop(out_q, stop, device_id)),
             asyncio.create_task(role_coro),
@@ -429,7 +419,7 @@ async def run_agent(
         await asyncio.sleep(run_secs)
         log.info("[%s] run_secs=%s elapsed — shutting down", device_id, run_secs)
         stop.set()
-        await out_q.put(None)   # unblock tx_loop if it is waiting
+        await out_q.put(None)   # unblock request_iter if it is waiting
 
         await asyncio.gather(*tasks, return_exceptions=True)
         log.info("[%s] agent finished cleanly", device_id)
