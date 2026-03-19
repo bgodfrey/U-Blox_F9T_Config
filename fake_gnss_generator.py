@@ -273,7 +273,7 @@ def scenario_no_fix() -> List[bytes]:
     ]
 
 
-def scenario_rtcm_stream(message_numbers: List[int] | None = None) -> List[bytes]:
+def scenario_rtcm_stream(message_numbers: Optional[List[int]] = None) -> List[bytes]:
     """Return a list of RTCM3 frames for the given message numbers.
 
     Defaults to a typical base-station output: 1005, 1074, 1084, 1094, 1230.
