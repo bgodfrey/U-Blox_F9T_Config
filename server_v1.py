@@ -49,8 +49,8 @@ RPC_ROOT = find_repo_root() / "src" / "panoseti_grpc" / "generated"
 sys.path.insert(0, str(RPC_ROOT))
 
 
-import panoseti.telemetry.telemetry_pb2 as tpb
-import panoseti.telemetry.telemetry_pb2_grpc as tgrpc
+import panoseti_grpc.generated.telemetry_pb2 as tpb
+import panoseti_grpc.generated.telemetry_pb2_grpc as tgrpc
 
 
 # ----------------------------- basic config ---------------------------------
@@ -768,7 +768,7 @@ async def serve(addr: str = "0.0.0.0:50051") -> None:
 	# Start accepting RPCs
 	await server.start()
 
-	#_telem_fwd_task = asyncio.create_task(telem_forwarder_loop())
+	_telem_fwd_task = asyncio.create_task(telem_forwarder_loop())
 
 	# --- Wait for shutdown condition ---
 
