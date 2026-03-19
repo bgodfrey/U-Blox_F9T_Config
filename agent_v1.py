@@ -44,7 +44,8 @@ from serial import Serial
 from pyubx2.exceptions import UBXMessageError, UBXParseError, UBXStreamError, UBXTypeError
 from pyubx2 import POLL, SET, UBX_CONFIG_DATABASE, UBXReader, UBXMessage, UBX_PROTOCOL
 from pyubx2 import UBX_CONFIG_DATABASE as CFGDB
-import argparse, asyncio, contextlib, glob, io, json5, logging, os, re, signal, struct, sys, time
+import argparse, asyncio, contextlib, glob, io, json5, logging, os, re, signal, struct, subprocess, sys, time
+from pathlib import Path
 import grpc, serial
 import caster_setup_pb2 as pb
 import caster_setup_pb2_grpc as rpc
@@ -58,8 +59,6 @@ def find_repo_root() -> Path:
 
 RPC_ROOT = find_repo_root() / "src" / "panoseti_grpc" / "generated"
 sys.path.insert(0, str(RPC_ROOT))
-import panoseti.telemetry.telemetry_pb2 as tpb
-import panoseti.telemetry.telemetry_pb2_grpc as tgrpc
 from typing import Optional, Tuple, Dict
 
 # --- Configuration & constants ----------------------------------------------
@@ -262,7 +261,7 @@ class TelemetryAgg:
 		elif ident == "NAV-DOP":
 			pd = getattr(msg, "pDOP", None)
 			if pd is not None:
-				self.pdop = float(pd/100.)
+				self.pdop = float(pd)
 		elif ident == "NAV-TIMEUTC":
 			self.utc_ok = bool(getattr(msg, "validUTC", 0))
 
@@ -492,8 +491,7 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 			pdop     = float(getattr(agg, "pdop", 0.0) or 0.0)
 
 
-			# protobuf payload (for remote)
-			'''
+			# protobuf payload (for remote Control.Pipe to server)
 			t = pb.Telemetry(
 				unix_ms=unix_ms,
 				temp_c=temp_c,
@@ -503,40 +501,6 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 				gps_used=gps_used, gal_used=gal_used,
 				bds_used=bds_used, glo_used=glo_used,
 				avg_cno=avg_cno, pdop=pdop,
-			)
-			'''
-
-			# Put the “extra” stuff in extra_data so GnssPayload stays stable
-			device_type = "gnss"
-			if '_' in _TELEM_SUFFIX:
-				alias = _TELEM_SUFFIX[:_TELEM_SUFFIX.index('_')]
-				device_id = f"{_TELEM_SUFFIX[_TELEM_SUFFIX.index('_')+1:]}"
-			else:
-				device_id = f"{_TELEM_SUFFIX}"
-
-			extra = {
-				"alias": alias,
-				"temp_c": float(temp_c),
-				"pdop": pdop,
-				"gps_used": gps_used,
-				"gal_used": gal_used,
-				"bds_used": bds_used,
-				"glo_used": glo_used,
-			}
-
-			req = tpb.StatusRequest(
-				device_type=device_type,
-				device_id=device_id,
-				timestamp=unix_ms,
-				gnss=tpb.GnssPayload(
-					unix_ms=unix_ms,
-					qerr_ns=qerr_ns,
-					utc_ok=utc_ok,
-					num_vis=num_vis,
-					num_used=num_used,
-					avg_cno=avg_cno,
-					extra_data=_struct_from_dict(extra),
-				),
 			)
 
 			# local JSONL record (flat & compact)
@@ -565,7 +529,7 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 				if not writer or not writer.is_open():
 					break
 				try:
-					ok = await writer.write(tpb.ControlMsg(telem=t))
+					ok = await writer.write(pb.ControlMsg(telem=t))
 					dt = time.monotonic() - t0
 					if dt > 0.05:
 						_loki_log.warning("[telem] grpc write took %.3fs", dt)
