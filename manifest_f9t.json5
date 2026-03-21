@@ -28,14 +28,15 @@
       // ---- TP1: 1 Hz, 100 µs duty (0.01%), align to TOW ----
       { key: "CFG_TP_TP1_ENA",            value: 1 },
       { key: "CFG_TP_FREQ_TP1",           value: 0 },     // Turn off unless locked
-      { key: "CFG_TP_DUTY_TP1",           value: 0.01 },  // % (RATIO)
+      { key: "CFG_TP_DUTY_TP1",           value: 2 },  // % (RATIO)
       { key: "CFG_TP_SYNC_GNSS_TP1",      value: 1 },
       { key: "CFG_TP_USE_LOCKED_TP1",     value: 1 },
       { key: "CFG_TP_ALIGN_TO_TOW_TP1",   value: 1 },
       { key: "CFG_TP_TIMEGRID_TP1",       value: 0 },     // 0=UTC, 1=GPS
       { key: "CFG_TP_FREQ_LOCK_TP1",      value: 1 },
-      { key: "CFG_TP_DUTY_LOCK_TP1",      value: 0.01 },
-
+      { key: "CFG_TP_DUTY_LOCK_TP1",      value: 2 },
+      { key: "CFG_TP_DRSTR_TP1",          value: 0 },
+      
       // UBX telemetry at 1 Hz
       { key: "CFG_MSGOUT_UBX_TIM_TP_USB",       value: 1 },
       { key: "CFG_MSGOUT_UBX_NAV_TIMEUTC_USB",  value: 1 },
@@ -50,7 +51,7 @@
       { key: "CFG_TP_ALIGN_TO_TOW_TP2",   value: 1 },
       { key: "CFG_TP_SYNC_GNSS_TP2",      value: 1 },
       { key: "CFG_TP_TIMEGRID_TP2",       value: 0 },
-      { key: "CFG_TP_DRSTR_TP2",          value: 1 },     // 1=3 mA, 3=12 mA (pick what you want)
+      { key: "CFG_TP_DRSTR_TP2",          value: 0 },     // 1=3 mA, 3=12 mA (pick what you want)
       { key: "CFG_TP_USE_LOCKED_TP2",     value: 1 },
       { key: "CFG_TP_FREQ_LOCK_TP2",      value: 10000000 },
       { key: "CFG_TP_DUTY_LOCK_TP2",      value: 50.0 },
