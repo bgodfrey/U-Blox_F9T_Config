@@ -110,16 +110,16 @@
       alias: "RAL",
       role: "base",
       serial: { port: "/dev/ttyACM0", baud: 115200 },
-      position: { format: "LLH", lat_deg: 33.3534828, lon_deg: -116.8624633, height_m: 1665.026, acc_m: 0.02 },
+      position: { format: "LLH", lat_deg: 37.8729043,, lon_deg: -122.2572689, height_m: 85.704, acc_m: 1 },
       antenna: {
-        model: "A.120.A.101111",
+        model: "XAHP.50.A.301111",
         serial: null,
         cable_length_m: 15,
         velocity_factor: 0.8,
         notes: "Pole mount"
       },
       config: [
-        { key: "CFG_TP_ANT_CABLEDELAY", value: 93 }
+        { key: "CFG_TP_ANT_CABLEDELAY", value: 0 }
       ]
     },
     
