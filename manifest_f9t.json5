@@ -110,7 +110,7 @@
       alias: "RAL",
       role: "base",
       serial: { port: "/dev/ttyACM0", baud: 115200 },
-      position: { format: "LLH", lat_deg: 37.8729043,, lon_deg: -122.2572689, height_m: 85.704, acc_m: 1 },
+      position: { format: "LLH", lat_deg: 37.8729043, lon_deg: -122.2572689, height_m: 85.704, acc_m: 1 },
       antenna: {
         model: "XAHP.50.A.301111",
         serial: null,
