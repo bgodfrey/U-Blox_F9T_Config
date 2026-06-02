@@ -118,6 +118,10 @@
         velocity_factor: 0.8,
         notes: "Pole mount"
       },
+      config: [
+        { key: "CFG_TP_ANT_CABLEDELAY", value: 93 }
+      ]
+    },
 
     "9D02FA41BC": {
       alias: "WINTERS",
