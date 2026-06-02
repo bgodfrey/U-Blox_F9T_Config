@@ -155,7 +155,7 @@ class TelemetryAgg:
 		"temp_c", "qerr_ps", "utc_ok", "num_vis", "num_used",
 		"gps_used", "gal_used", "bds_used", "glo_used", "avg_cno", "pdop",
 		"fix_type", "gnss_fix_ok", "diff_soln", "carr_soln",
-		"confirmed_date", "confirmed_time", "nav_pvt_num_sv"
+		"confirmed_date", "confirmed_time", "nav_pvt_num_sv", "nav_sat_top"
 	)
 
 	def __init__(self) -> None:
@@ -178,6 +178,7 @@ class TelemetryAgg:
 		self.confirmed_date = None
 		self.confirmed_time = None
 		self.nav_pvt_num_sv = None
+		self.nav_sat_top = []
 
 	#Turn bytes into stream and then returned the raw and parsed data
 	def feed_ubx(self, frame: bytes) -> None:
@@ -233,17 +234,34 @@ class TelemetryAgg:
 			used = 0
 			cno_sum = 0.0
 			gps = gal = bds = glo = 0
+			sat_details = []
 
 			off = 8
 			for _ in range(n):
 					gnssId = payload[off + 0]
+					svId   = payload[off + 1]
 					cno    = payload[off + 2]
+					elev   = int.from_bytes(payload[off + 3:off + 4], "little", signed=True)
+					azim   = int.from_bytes(payload[off + 4:off + 6], "little", signed=True)
 					flags  = int.from_bytes(payload[off + 8:off + 12], "little")
+					quality_ind = flags & 0x07
+					sv_used = bool(flags & 0x08)
+					health = (flags >> 4) & 0x03
 
 					cno_sum += float(cno)
+					sat_details.append({
+						"gnssId": int(gnssId),
+						"svId": int(svId),
+						"cno": int(cno),
+						"elev": int(elev),
+						"azim": int(azim),
+						"qualityInd": int(quality_ind),
+						"health": int(health),
+						"svUsed": sv_used,
+					})
 
 					# svUsed is bit 3 (0x08) in the flags bitfield (qualityInd is bits 0..2)
-					if flags & 0x08:
+					if sv_used:
 							used += 1
 							if gnssId == 0: gps += 1
 							elif gnssId == 2: gal += 1
@@ -256,6 +274,7 @@ class TelemetryAgg:
 			self.num_used = used
 			self.gps_used, self.gal_used, self.bds_used, self.glo_used = gps, gal, bds, glo
 			self.avg_cno = (cno_sum / n) if n else 0.0
+			self.nav_sat_top = sorted(sat_details, key=lambda s: s["cno"], reverse=True)[:8]
 
 		elif ident == "NAV-DOP":
 			pd = getattr(msg, "pDOP", None)
@@ -537,6 +556,7 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 						"confirmed_date": getattr(agg, "confirmed_date", None),
 						"confirmed_time": getattr(agg, "confirmed_time", None),
 						"nav_pvt_num_sv": getattr(agg, "nav_pvt_num_sv", None),
+						"nav_sat_top": getattr(agg, "nav_sat_top", []),
 					})
 				# fire-and-forget (don’t await if you want even looser coupling)
 				await _append_jsonl(rec)
