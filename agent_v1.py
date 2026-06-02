@@ -66,6 +66,7 @@ UBX_PROTO_RTCM3 = 0x20
 
 SAVE_TELEM_LOCAL  = True          # write JSONL locally
 SAVE_TELEM_REMOTE = True          # send to server over Control.Pipe
+_VERBOSE_TELEM = False            # include extra local-only telemetry when -v 3
 TELEM_DIR  = "./telem"  # or "/var/log/f9t_telem.jsonl"
 LOG_DIR = "./logging"
 os.makedirs(TELEM_DIR, exist_ok=True)
@@ -152,7 +153,9 @@ class TelemetryAgg:
 	The GNSS streams multiple UBX reports. We keep the latest values that are relevant to monitoring timing quality and sky conditions."""
 	__slots__ = (
 		"temp_c", "qerr_ps", "utc_ok", "num_vis", "num_used",
-		"gps_used", "gal_used", "bds_used", "glo_used", "avg_cno", "pdop"
+		"gps_used", "gal_used", "bds_used", "glo_used", "avg_cno", "pdop",
+		"fix_type", "gnss_fix_ok", "diff_soln", "carr_soln",
+		"confirmed_date", "confirmed_time", "nav_pvt_num_sv"
 	)
 
 	def __init__(self) -> None:
@@ -168,6 +171,13 @@ class TelemetryAgg:
 		self.glo_used = 0       # GLONASS satellites 
 		self.avg_cno = 0.0      # Carrier-to-noise density ratio (signal strength); Units are dBHz
 		self.pdop = 0.0         # Position dilution of precision - gives a measure of satellite distribution; good PDOP < 3 and poor PDOP > 7 (see https://en.wikipedia.org/wiki/Dilution_of_precision)
+		self.fix_type = None    # UBX-NAV-PVT fixType; 5 is time-only fix
+		self.gnss_fix_ok = None
+		self.diff_soln = None
+		self.carr_soln = None
+		self.confirmed_date = None
+		self.confirmed_time = None
+		self.nav_pvt_num_sv = None
 
 	#Turn bytes into stream and then returned the raw and parsed data
 	def feed_ubx(self, frame: bytes) -> None:
@@ -253,6 +263,19 @@ class TelemetryAgg:
 				self.pdop = float(pd/100.)
 		elif ident == "NAV-TIMEUTC":
 			self.utc_ok = bool(getattr(msg, "validUTC", 0))
+		elif ident == "NAV-PVT":
+			payload = frame[6:-2]  # strip UBX header (6) and checksum (2)
+			if len(payload) < 24:
+				return
+			flags = payload[21]
+			flags2 = payload[22]
+			self.fix_type = int(payload[20])
+			self.gnss_fix_ok = bool(flags & 0x01)
+			self.diff_soln = bool(flags & 0x02)
+			self.carr_soln = (flags >> 6) & 0x03
+			self.confirmed_date = bool(flags2 & 0x20)
+			self.confirmed_time = bool(flags2 & 0x40)
+			self.nav_pvt_num_sv = int(payload[23])
 
 
 # Stop any existing telemetry publisher and start exactly one new instance.
@@ -505,6 +528,16 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 					"bds_used": bds_used, "glo_used": glo_used,
 					"avg_cno": round(avg_cno, 4), "pdop": round(pdop, 4),
 				}
+				if _VERBOSE_TELEM:
+					rec.update({
+						"fix_type": getattr(agg, "fix_type", None),
+						"gnss_fix_ok": getattr(agg, "gnss_fix_ok", None),
+						"diff_soln": getattr(agg, "diff_soln", None),
+						"carr_soln": getattr(agg, "carr_soln", None),
+						"confirmed_date": getattr(agg, "confirmed_date", None),
+						"confirmed_time": getattr(agg, "confirmed_time", None),
+						"nav_pvt_num_sv": getattr(agg, "nav_pvt_num_sv", None),
+					})
 				# fire-and-forget (don’t await if you want even looser coupling)
 				await _append_jsonl(rec)
 				dt = time.monotonic() - t0
@@ -1395,6 +1428,8 @@ async def control_pipe(ser, ser_lock, uid_hex, fwver, protver, hwver, mount_toke
 						await _cfg_msg_usb_rate_ubx(ser, ser_lock, 0x0A, 0x39, 1)  # MON-SYS
 						await _cfg_msg_usb_rate_ubx(ser, ser_lock, 0x01, 0x35, 1)  # NAV-SAT
 						await _cfg_msg_usb_rate_ubx(ser, ser_lock, 0x01, 0x04, 1)  # NAV-DOP
+						if _VERBOSE_TELEM:
+							await _cfg_msg_usb_rate_ubx(ser, ser_lock, 0x01, 0x07, 1)  # NAV-PVT
 
 						if not is_base:
 							# Device-level proof it’s ingesting RTCM:
@@ -1441,6 +1476,8 @@ async def control_pipe(ser, ser_lock, uid_hex, fwver, protver, hwver, mount_toke
 						
 						# Ensure serial demux + telemetry consumer/publisher are alive.
 						await ensure_demux_started(ser, ser_lock, call)
+						if _VERBOSE_TELEM:
+							await _cfg_msg_usb_rate_ubx(ser, ser_lock, 0x01, 0x07, 1)  # NAV-PVT
 						
 						# Start exactly one role task (publish if BASE, subscribe if RECEIVER).
 						await start_role_task(role_enum, ser, ser_lock, m.ack.mount, m.ack.token, rtcm_q=_rtcm_q)
@@ -1568,11 +1605,12 @@ Entry point: discover device, open control pipe, and manage lifetime.
 • On error: logs and retries after a short delay.
 """
 async def main():
-	global _LOG_PATH, _CAST_ADDR, _CTRL_ADDR
+	global _LOG_PATH, _CAST_ADDR, _CTRL_ADDR, _VERBOSE_TELEM
 	stop = asyncio.Event()
 	install_signal_handlers(stop)
 	try:
 		args = parse_args()
+		_VERBOSE_TELEM = args.verbosity >= 3
 
 
 		# Discover device and identity (optionally use provided port)
