@@ -171,6 +171,48 @@ The configuration file is, by default, given in *manifest_f9t.json5*. It defines
     * Antenna information also isn't used for anything except for notes that can be referenced later. The configuration script is saved when the devices are configured so that the settings can be referenced later.
 
 
+## Telemetry Fields
+
+The agent writes local telemetry as JSON5 lines. The standard fields are also sent to the server over the control stream. When the agent is run with `-v 3`, it adds extra local-only diagnostic fields from `UBX-NAV-PVT` and `UBX-NAV-SAT`.
+
+Standard fields:
+
+* `ts`: Local agent write time in Unix milliseconds.
+* `unix_ms`: Timestamp used for the telemetry record in Unix milliseconds.
+* `temp_c`: Receiver temperature from `UBX-MON-SYS`, in degrees Celsius.
+* `qerr_ns`: Time-pulse quantization error from `UBX-TIM-TP`, converted to nanoseconds.
+* `utc_ok`: UTC validity flag. This is derived from `UBX-TIM-TP.utc` and/or `UBX-NAV-TIMEUTC.validUTC`.
+* `num_vis`: Number of satellites reported in `UBX-NAV-SAT`.
+* `num_used`: Number of `UBX-NAV-SAT` entries with the `svUsed` flag set.
+* `gps_used`: Used GPS satellites (`gnssId=0`).
+* `gal_used`: Used Galileo satellites (`gnssId=2`).
+* `bds_used`: Used BeiDou satellites (`gnssId=3`).
+* `glo_used`: Used GLONASS satellites (`gnssId=6`).
+* `avg_cno`: Mean carrier-to-noise density ratio across all `UBX-NAV-SAT` entries, in dB-Hz. This can be lower than the best satellites if many weak channels are visible.
+* `pdop`: Position dilution of precision from `UBX-NAV-DOP`. In fixed-position timing mode this is often not a useful health metric, and stays fixed at 0.999.
+
+Verbose-only fields (`-v 3`):
+
+* `fix_type`: `UBX-NAV-PVT.fixType`. Useful values include `0` for no fix, `3` for 3D fix, and `5` for time-only fix.
+* `gnss_fix_ok`: `UBX-NAV-PVT.flags.gnssFixOK`; true when the receiver considers the fix valid.
+* `diff_soln`: `UBX-NAV-PVT.flags.diffSoln`; true when differential corrections (RTK) are being used in the solution.
+* `carr_soln`: `UBX-NAV-PVT.flags.carrSoln`; carrier-phase status: `0` none, `1` float, `2` fixed.
+* `confirmed_date`: `UBX-NAV-PVT.flags2.confirmedDate`; true when the receiver has confirmed the date.
+* `confirmed_time`: `UBX-NAV-PVT.flags2.confirmedTime`; true when the receiver has confirmed the time of day.
+* `nav_pvt_num_sv`: Number of satellites used by `UBX-NAV-PVT`.
+* `nav_sat_top`: Top eight `UBX-NAV-SAT` entries sorted by C/N0. Each entry contains:
+  * `gnssId`: Constellation ID (`0` GPS, `2` Galileo, `3` BeiDou, `6` GLONASS).
+  * `svId`: Satellite vehicle ID within that constellation.
+  * `cno`: Carrier-to-noise density ratio in dB-Hz.
+  * `elev`: Satellite elevation in degrees.
+  * `azim`: Satellite azimuth in degrees.
+  * `qualityInd`: u-blox signal quality indicator.
+  * `health`: Satellite health flag (`1` is healthy).
+  * `svUsed`: Whether this satellite is used in the current solution.
+
+For a fixed-position timing base, a healthy state usually looks like `fix_type: 5`, `gnss_fix_ok: true`, `utc_ok: true`, nonzero `num_used`, and small/stable `qerr_ns`.
+
+
 ## Run Instructions
 
 * Install requirements (assumes that you're using Python 3.9 although it seems to work up through Python 3.14)
