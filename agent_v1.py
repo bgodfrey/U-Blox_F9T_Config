@@ -1681,7 +1681,7 @@ async def main():
 			ctrl_task = asyncio.create_task(control_pipe(ser, ser_lock, uid, ver['fwver'], ver['protver'], ver['hwver'], creds))
 
 			# Wait until either we have role+creds or a stop signal arrives
-			while not stop.is_set() and not (creds["mount"] and creds["token"] and creds["role"]):
+			while not stop.is_set() and not ctrl_task.done() and not (creds["mount"] and creds["role"] is not None):
 				await asyncio.sleep(0.1)
 			stop_task = asyncio.create_task(stop.wait())
 			done, _ = await asyncio.wait({ctrl_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
