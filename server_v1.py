@@ -279,7 +279,8 @@ async def cfg_from_manifest_for_device(man: dict, device_id: str, role_enum: int
 	items += (dev.get("config") or [])
 
 	pos = (dev or {}).get("position", {})
-	if (pos.get("format", "").upper() == "LLH" and
+	if (role_enum == pb.Role.BASE and
+			pos.get("format", "").upper() == "LLH" and
 			all(k in pos for k in ("lat_deg", "lon_deg", "height_m"))):
 		items += _llh_to_cfg_tmode_llh(
 			float(pos["lat_deg"]), float(pos["lon_deg"]), float(pos["height_m"]), float(pos.get("acc_m", 0.02))

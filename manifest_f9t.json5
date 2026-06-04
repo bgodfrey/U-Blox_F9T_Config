@@ -83,7 +83,8 @@
         { key: "CFG_MSGOUT_UBX_RXM_RTCM_USB", value: 1 },
         { key: "CFG_MSGOUT_UBX_NAV_PVT_USB",  value: 1 },
         { key: "CFG_USBOUTPROT_RTCM3X", value: 0 },  // Ensure no RTCM3 OUT on receiver USB
-        { key: "CFG_MSGOUT_UBX_MON_COMMS_USB",  value: 1}
+        { key: "CFG_MSGOUT_UBX_MON_COMMS_USB",  value: 1},
+        { key: "CFG_TMODE_MODE", value: 0 },  // rover/positioning mode
       ]
     }
   },

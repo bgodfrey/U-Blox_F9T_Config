@@ -156,7 +156,9 @@ class TelemetryAgg:
 		"temp_c", "qerr_ps", "utc_ok", "num_vis", "num_used",
 		"gps_used", "gal_used", "bds_used", "glo_used", "avg_cno", "pdop",
 		"fix_type", "gnss_fix_ok", "diff_soln", "carr_soln",
-		"confirmed_date", "confirmed_time", "nav_pvt_num_sv", "nav_sat_top"
+		"confirmed_date", "confirmed_time", "nav_pvt_num_sv", "nav_sat_top",
+		"nav_pvt_lat_deg", "nav_pvt_lon_deg", "nav_pvt_height_m",
+		"nav_pvt_hmsl_m", "nav_pvt_hacc_m", "nav_pvt_vacc_m"
 	)
 
 	def __init__(self) -> None:
@@ -180,6 +182,12 @@ class TelemetryAgg:
 		self.confirmed_time = None
 		self.nav_pvt_num_sv = None
 		self.nav_sat_top = []
+		self.nav_pvt_lat_deg = None
+		self.nav_pvt_lon_deg = None
+		self.nav_pvt_height_m = None
+		self.nav_pvt_hmsl_m = None
+		self.nav_pvt_hacc_m = None
+		self.nav_pvt_vacc_m = None
 
 	#Turn bytes into stream and then returned the raw and parsed data
 	def feed_ubx(self, frame: bytes) -> None:
@@ -285,7 +293,7 @@ class TelemetryAgg:
 			self.utc_ok = bool(getattr(msg, "validUTC", 0))
 		elif ident == "NAV-PVT":
 			payload = frame[6:-2]  # strip UBX header (6) and checksum (2)
-			if len(payload) < 24:
+			if len(payload) < 48:
 				return
 			flags = payload[21]
 			flags2 = payload[22]
@@ -296,6 +304,12 @@ class TelemetryAgg:
 			self.confirmed_date = bool(flags2 & 0x20)
 			self.confirmed_time = bool(flags2 & 0x40)
 			self.nav_pvt_num_sv = int(payload[23])
+			self.nav_pvt_lon_deg = int.from_bytes(payload[24:28], "little", signed=True) * 1e-7
+			self.nav_pvt_lat_deg = int.from_bytes(payload[28:32], "little", signed=True) * 1e-7
+			self.nav_pvt_height_m = int.from_bytes(payload[32:36], "little", signed=True) / 1000.0
+			self.nav_pvt_hmsl_m = int.from_bytes(payload[36:40], "little", signed=True) / 1000.0
+			self.nav_pvt_hacc_m = int.from_bytes(payload[40:44], "little", signed=False) / 1000.0
+			self.nav_pvt_vacc_m = int.from_bytes(payload[44:48], "little", signed=False) / 1000.0
 
 
 # Stop any existing telemetry publisher and start exactly one new instance.
@@ -557,6 +571,12 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 						"confirmed_date": getattr(agg, "confirmed_date", None),
 						"confirmed_time": getattr(agg, "confirmed_time", None),
 						"nav_pvt_num_sv": getattr(agg, "nav_pvt_num_sv", None),
+						"nav_pvt_lat_deg": getattr(agg, "nav_pvt_lat_deg", None),
+						"nav_pvt_lon_deg": getattr(agg, "nav_pvt_lon_deg", None),
+						"nav_pvt_height_m": getattr(agg, "nav_pvt_height_m", None),
+						"nav_pvt_hmsl_m": getattr(agg, "nav_pvt_hmsl_m", None),
+						"nav_pvt_hacc_m": getattr(agg, "nav_pvt_hacc_m", None),
+						"nav_pvt_vacc_m": getattr(agg, "nav_pvt_vacc_m", None),
 						"nav_sat_top": getattr(agg, "nav_sat_top", []),
 					})
 				# fire-and-forget (don’t await if you want even looser coupling)
