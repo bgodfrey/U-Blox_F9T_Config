@@ -953,23 +953,51 @@ def discover_f9x(timeout=0.6, port: Optional[str] = None):
 			sorted(glob.glob("/dev/ttyUSB*"))
 		)
 		cands = list(dict.fromkeys(paths))
+	if not cands:
+		raise RuntimeError("No serial candidates found (/dev/serial/by-id, /dev/ttyACM*, /dev/ttyUSB*)")
+
 	for dev in cands:
+		print(f"[agent] probing serial candidate {dev}", flush=True)
 		try:
-			with serial.Serial(dev, 115200, timeout=timeout) as ser:
-				ubr = UBXReader(ser, protfilter=UBX_PROTOCOL)
+			with serial.Serial(dev, 115200, timeout=0.05, write_timeout=0.2) as ser:
+				with contextlib.suppress(Exception):
+					ser.reset_input_buffer()
 				ser.write(UBXMessage("SEC", "SEC-UNIQID", POLL).serialize())
 				t0 = time.time()
+				rx = bytearray()
 				while time.time() - t0 < timeout:
-					_, msg = ubr.read()
-					if getattr(msg, "identity", "") == "SEC-UNIQID":
-						uid = getattr(msg, "uniqueId", None)
-						uid_hex = (f"{uid:010X}" if isinstance(uid, int) else bytes(uid).hex().upper())
-						log.info("discovered %s uid=%s", dev, uid_hex)
-						return dev, uid_hex
+					chunk = ser.read(128)
+					if not chunk:
+						continue
+					rx.extend(chunk)
+
+					while len(rx) >= 8:
+						sync = rx.find(b"\xB5\x62")
+						if sync < 0:
+							del rx[:]
+							break
+						if sync:
+							del rx[:sync]
+						if len(rx) < 6:
+							break
+						length = rx[4] | (rx[5] << 8)
+						total = 6 + length + 2
+						if len(rx) < total:
+							break
+						frame = bytes(rx[:total])
+						del rx[:total]
+						ck_a, ck_b = _ubx_ck(frame[2:6 + length])
+						if frame[-2] != ck_a or frame[-1] != ck_b:
+							continue
+						if frame[2] == 0x27 and frame[3] == 0x03 and length >= 9:
+							uid_hex = frame[10:15].hex().upper()
+							print(f"[agent] discovered {dev} uid={uid_hex}", flush=True)
+							log.info("discovered %s uid=%s", dev, uid_hex)
+							return dev, uid_hex
 		except RuntimeError:
 			sys.exit(1)
-		except Exception:
-			pass
+		except Exception as e:
+			print(f"[agent] skipping {dev}: {e}", flush=True)
 	raise RuntimeError("No u-blox device found")
 
 # ----------------------------------------------------------------------------
