@@ -54,6 +54,7 @@ from typing import Optional, Tuple, Dict
 # --- Configuration & constants ----------------------------------------------
 _CTRL_ADDR = "localhost:50051"     # Control service address (bidirectional)
 _CAST_ADDR = "localhost:50051"     # Caster service address (publish/subscribe)
+_CONTROL_HANDSHAKE_TIMEOUT_S = 20.0
 
 HEX10 = re.compile(r"[0-9A-F]{10}$")
 PRINT_RTCM_IDS = True              # Print RTCM message IDs as they pass
@@ -946,9 +947,12 @@ def discover_f9x(timeout=0.6, port: Optional[str] = None):
 	if port:
 		cands = [port]
 	else:
-		cands = sorted(glob.glob("/dev/ttyACM*"))
-		#sorted(glob.glob("/dev/serial/by-id/*")) or \
-				#sorted(glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*"))
+		paths = (
+			sorted(glob.glob("/dev/serial/by-id/*")) +
+			sorted(glob.glob("/dev/ttyACM*")) +
+			sorted(glob.glob("/dev/ttyUSB*"))
+		)
+		cands = list(dict.fromkeys(paths))
 	for dev in cands:
 		try:
 			with serial.Serial(dev, 115200, timeout=timeout) as ser:
@@ -1635,11 +1639,12 @@ async def main():
 
 		# Discover device and identity (optionally use provided port)
 		
+		print(f"[agent] discovering u-blox serial port ({args.port or 'auto'})...", flush=True)
 		port, uid = discover_f9x(port = args.port)
 		set_logging_alias(uid)
 		setup_logging(args.verbosity, log_file = _LOG_PATH or None, console = False)
 		#log = logging.getLogger("agent") 
-		print(f'starting up {uid}...')
+		print(f'[agent] starting up {uid} on {port}', flush=True)
 		log.info("starting up…")
 
 		# Run through the four cases to set ctrl/cast addr; default to "0.0.0.0:50051"
@@ -1660,6 +1665,7 @@ async def main():
 		
 		log.info(f'[agent] cast address {_CAST_ADDR}')
 		log.info(f'[agent] ctrl address {_CTRL_ADDR}')
+		print(f"[agent] control={_CTRL_ADDR} caster={_CAST_ADDR}", flush=True)
 
 		while True:
 			# Discover device and identity (optionally use provided port)
@@ -1680,9 +1686,20 @@ async def main():
 			creds = {"mount": None, "token": None, "role": None}
 			ctrl_task = asyncio.create_task(control_pipe(ser, ser_lock, uid, ver['fwver'], ver['protver'], ver['hwver'], creds))
 
-			# Wait until either we have role+creds or a stop signal arrives
+			# Wait until either we have role+creds, control exits, timeout expires, or a stop signal arrives.
+			handshake_deadline = time.monotonic() + _CONTROL_HANDSHAKE_TIMEOUT_S
 			while not stop.is_set() and not ctrl_task.done() and not (creds["mount"] and creds["role"] is not None):
+				if time.monotonic() > handshake_deadline:
+					log.warning("[agent] control handshake timed out after %.1fs", _CONTROL_HANDSHAKE_TIMEOUT_S)
+					print(f"[agent] no HelloAck from {_CTRL_ADDR} after {_CONTROL_HANDSHAKE_TIMEOUT_S:.0f}s; retrying", flush=True)
+					await cancel_and_wait(ctrl_task)
+					break
 				await asyncio.sleep(0.1)
+			if ctrl_task.done() and not (creds["mount"] and creds["role"] is not None):
+				with contextlib.suppress(Exception):
+					ser.close()
+				await asyncio.sleep(2.0)
+				continue
 			stop_task = asyncio.create_task(stop.wait())
 			done, _ = await asyncio.wait({ctrl_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
 
