@@ -990,7 +990,7 @@ def discover_f9x(timeout=0.6, port: Optional[str] = None):
 						if frame[-2] != ck_a or frame[-1] != ck_b:
 							continue
 						if frame[2] == 0x27 and frame[3] == 0x03 and length >= 9:
-							uid_hex = frame[10:15].hex().upper()
+							uid_hex = f"{int.from_bytes(frame[10:15], 'little'):010X}"
 							print(f"[agent] discovered {dev} uid={uid_hex}", flush=True)
 							log.info("discovered %s uid=%s", dev, uid_hex)
 							return dev, uid_hex
