@@ -22,8 +22,8 @@
       { key: "CFG_SIGNAL_GLO_L1_ENA",     value: 1 },
       { key: "CFG_SIGNAL_GLO_L2_ENA",     value: 1 },
 
-      { key: "CFG_SIGNAL_SBAS_ENA",       value: 1 },
-      { key: "CFG_SIGNAL_QZSS_ENA",       value: 1 },
+      { key: "CFG_SIGNAL_SBAS_ENA",       value: 0 },
+      { key: "CFG_SIGNAL_QZSS_ENA",       value: 0 },
 
       // ---- Timepulse global modes (use FREQ + RATIO) ----
       { key: "CFG_TP_PULSE_DEF",          value: 1 },     // 1 = FREQ
