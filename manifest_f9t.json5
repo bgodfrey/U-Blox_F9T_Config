@@ -2,6 +2,7 @@
   global: {
     apply_to_layers: ["RAM"],
     verify_layer: "RAM",
+    version: 2,
     config: [
       // ---- Constellations & signals ----
       { key: "CFG_SIGNAL_GPS_ENA",        value: 1 },
@@ -16,11 +17,6 @@
       { key: "CFG_SIGNAL_BDS_ENA",        value: 1 },
       { key: "CFG_SIGNAL_BDS_B1_ENA",     value: 1 },
       { key: "CFG_SIGNAL_BDS_B2_ENA",     value: 1 },
-
-      // Test-only: disable GLONASS while evaluating rover accuracy/RTCM behavior.
-      { key: "CFG_SIGNAL_GLO_ENA",        value: 1 },
-      { key: "CFG_SIGNAL_GLO_L1_ENA",     value: 1 },
-      { key: "CFG_SIGNAL_GLO_L2_ENA",     value: 1 },
 
       { key: "CFG_SIGNAL_SBAS_ENA",       value: 0 },
       { key: "CFG_SIGNAL_QZSS_ENA",       value: 0 },
@@ -85,6 +81,8 @@
       config: [
         { key: "CFG_USBINPROT_RTCM3X", value: 1 },
         { key: "CFG_USBOUTPROT_UBX",   value: 1 },
+
+        // Receiver-positioning test: keep USB telemetry readable while ingesting RTCM.
         { key: "CFG_MSGOUT_UBX_RXM_RTCM_USB", value: 0 },
         { key: "CFG_MSGOUT_UBX_NAV_PVT_USB",  value: 1 },
         { key: "CFG_MSGOUT_UBX_NAV_SAT_USB",  value: 1 },
