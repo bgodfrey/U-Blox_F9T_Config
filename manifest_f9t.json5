@@ -18,9 +18,9 @@
       { key: "CFG_SIGNAL_BDS_B2_ENA",     value: 1 },
 
       // Test-only: disable GLONASS while evaluating rover accuracy/RTCM behavior.
-      { key: "CFG_SIGNAL_GLO_ENA",        value: 0 },
-      { key: "CFG_SIGNAL_GLO_L1_ENA",     value: 0 },
-      { key: "CFG_SIGNAL_GLO_L2_ENA",     value: 0 },
+      { key: "CFG_SIGNAL_GLO_ENA",        value: 1 },
+      { key: "CFG_SIGNAL_GLO_L1_ENA",     value: 1 },
+      { key: "CFG_SIGNAL_GLO_L2_ENA",     value: 1 },
 
       { key: "CFG_SIGNAL_SBAS_ENA",       value: 1 },
       { key: "CFG_SIGNAL_QZSS_ENA",       value: 1 },
