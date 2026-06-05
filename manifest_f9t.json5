@@ -2,7 +2,7 @@
   global: {
     apply_to_layers: ["RAM"],
     verify_layer: "RAM",
-    version: 2,
+    version: 3,
     config: [
       // ---- Constellations & signals ----
       { key: "CFG_SIGNAL_GPS_ENA",        value: 1 },
@@ -81,23 +81,11 @@
       config: [
         { key: "CFG_USBINPROT_RTCM3X", value: 1 },
         { key: "CFG_USBOUTPROT_UBX",   value: 1 },
-
-        // Receiver-positioning test: keep USB telemetry readable while ingesting RTCM.
-        { key: "CFG_MSGOUT_UBX_RXM_RTCM_USB", value: 0 },
+        { key: "CFG_MSGOUT_UBX_RXM_RTCM_USB", value: 1 },
         { key: "CFG_MSGOUT_UBX_NAV_PVT_USB",  value: 1 },
-        { key: "CFG_MSGOUT_UBX_NAV_SAT_USB",  value: 1 },
-        { key: "CFG_MSGOUT_UBX_NAV_DOP_USB",  value: 1 },
         { key: "CFG_USBOUTPROT_RTCM3X", value: 0 },  // Ensure no RTCM3 OUT on receiver USB
         { key: "CFG_MSGOUT_UBX_MON_COMMS_USB",  value: 1},
         { key: "CFG_TMODE_MODE", value: 0 },  // rover/positioning mode
-
-        // Positioning-test only: F9P-style rover settings for comparing F9T position accuracy with RTCM input.
-        { key: "CFG_NAVSPG_DYNMODEL", value: 2 },  // stationary
-        { key: "CFG_USBINPROT_UBX", value: 1 },
-        { key: "CFG_USBINPROT_NMEA", value: 0 },
-        { key: "CFG_USBOUTPROT_NMEA", value: 0 },
-        { key: "CFG_RATE_MEAS", value: 1000 },  // 1 Hz measurement rate while debugging receiver NAV-SAT output
-        { key: "CFG_RATE_NAV", value: 1 },
       ]
     }
   },
