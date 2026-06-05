@@ -727,17 +727,60 @@ async def _valget_verify(ser, ser_lock, cfgData, layer: str = "RAM", timeout_per
 			# fallback
 		raise KeyError(f"Unsupported CFGDB entry type for {name}: {type(rec)}")
 
-	def _merge_cfg_results(results_by_name: dict, parsed):
-		# Your UBXMessage._set_attribute_cfgval() sets each key *name* as an attribute
-		# on the parsed message. Collect those into {NAME: value}.
-		d = getattr(parsed, "__dict__", {})
-		for k, v in d.items():
-			if k.startswith("_"):
+	def _merge_cfg_one(results_by_id: dict, key, val):
+		if isinstance(key, int):
+			kid = key
+		elif isinstance(key, str):
+			s = key.strip()
+			if s.lower().startswith("0x"):
+				kid = int(s, 16)
+			else:
+				m = re.match(r"^CFG_0X([0-9A-Fa-f]{8})$", s.upper())
+				if m:
+					kid = int(m.group(1), 16)
+				else:
+					try:
+						kid = _name_to_keyid(_norm(s))
+					except Exception:
+						return
+		else:
+			return
+		results_by_id[kid] = val
+
+	def _merge_cfg_results(results_by_id: dict, parsed):
+		cfg = getattr(parsed, "cfgData", None) or getattr(parsed, "cfgdata", None)
+		if isinstance(cfg, dict):
+			for k, v in cfg.items():
+				_merge_cfg_one(results_by_id, k, v)
+			return
+		if isinstance(cfg, list):
+			for item in cfg:
+				if isinstance(item, (tuple, list)) and len(item) >= 2:
+					_merge_cfg_one(results_by_id, item[0], item[1])
+			return
+
+		attrs = getattr(parsed, "__dict__", {})
+
+		# pyubx2 commonly exposes VALGET entries as CFG_* attributes.
+		for name, val in attrs.items():
+			if isinstance(name, str) and name.startswith("CFG_"):
+				_merge_cfg_one(results_by_id, name, val)
+
+		# Other variants expose numbered keyID/value attribute pairs.
+		for name, kid in attrs.items():
+			m = re.match(r"^(?:keyID|key|cfgKey|keyid)_?(\d+)$", name)
+			if not m:
 				continue
-			# skip non-CFG fields commonly present on some UBX objects
-			if k in ("identity",):
-				 continue
-			results_by_name[k.upper()] = v
+			idx = m.group(1)
+			for vname in (
+				f"val_{idx}", f"val{idx}", f"value_{idx}", f"value{idx}",
+				f"valU1_{idx}", f"valU2_{idx}", f"valU4_{idx}", f"valU8_{idx}",
+				f"valI1_{idx}", f"valI2_{idx}", f"valI4_{idx}", f"valI8_{idx}",
+				f"valR4_{idx}", f"valR8_{idx}",
+			):
+				if vname in attrs:
+					_merge_cfg_one(results_by_id, kid, attrs[vname])
+					break
 
 	def _equal(want, have) -> bool:
 		# Normalize tiny type differences: bool vs int, float rounding
@@ -753,9 +796,9 @@ async def _valget_verify(ser, ser_lock, cfgData, layer: str = "RAM", timeout_per
 		# strings or others → string compare
 		return str(have) == str(want)
 
-		# --- map requested names ----	
-	want_by_name = {}
-	want_names = []
+		# --- map requested names ----
+	want_by_id = {}
+	want_ids = []
 	for name, val in cfgData:
 		key = name.strip().upper().replace("-", "_")
 		try:
@@ -763,22 +806,23 @@ async def _valget_verify(ser, ser_lock, cfgData, layer: str = "RAM", timeout_per
 		except KeyError:
 			# If a name isn't in pyubx2 DB, skip it
 			continue
-		want_by_name[key] = val
-		want_names.append(key)
+		if kid not in want_by_id:
+			want_ids.append(kid)
+		want_by_id[kid] = (key, val)
 
-	if not want_names:
+	if not want_ids:
 		return True, []  # nothing to verify
 
 	poll_layer = {"RAM": 0, "BBR": 1, "FLASH": 2, "DEFAULT": 7}.get(layer.upper(), 0)	
 
-	got_by_name = {}
+	got_by_id = {}
 
 	# --- poll in chunks to keep replies small --------------------------------
 	CHUNK = 32
-	for i in range(0, len(want_names), CHUNK):
-		chunk_names = want_names[i:i+CHUNK]
+	for i in range(0, len(want_ids), CHUNK):
+		chunk_ids = want_ids[i:i+CHUNK]
 
-		msg_get = UBXMessage.config_poll(layer=poll_layer, position=0, keys=chunk_names)
+		msg_get = UBXMessage.config_poll(layer=poll_layer, position=0, keys=chunk_ids)
 
 		# Lock serial for the whole poll+read window so we don't race demux
 		async with ser_lock:
@@ -799,12 +843,11 @@ async def _valget_verify(ser, ser_lock, cfgData, layer: str = "RAM", timeout_per
 				
 				# We expect one or more CFG-VALGET replies covering the requested keys
 				if getattr(parsed, "identity", "") == "CFG-VALGET":
-					_merge_cfg_results(got_by_name, parsed)
+					_merge_cfg_results(got_by_id, parsed)
 					last_valget_time = time.time()
 					# Stop early if we have all keys from this chunk
-					if all(n in got_by_name for n in chunk_names):
+					if all(kid in got_by_id for kid in chunk_ids):
 						break
-						continue
 				# If quiet for 300ms after last relevant frame, assume done
 					if last_valget_time and (time.time() - last_valget_time) > 0.3:
 						break
@@ -812,9 +855,9 @@ async def _valget_verify(ser, ser_lock, cfgData, layer: str = "RAM", timeout_per
 # --- pretty-print & compare ----------------------------------------------
 	mismatches = []
 	ok = True
-	for cfg_name in want_names:
-		want = want_by_name[cfg_name]
-		have = got_by_name.get(cfg_name)
+	for kid in want_ids:
+		cfg_name, want = want_by_id[kid]
+		have = got_by_id.get(kid)
 		if have is None:
 			log.warning("%-36s : MISSING (wanted %r) [%s]", cfg_name, want, layer)
 			mismatches.append(f"{cfg_name}: missing (want={want!r})")
