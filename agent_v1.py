@@ -288,7 +288,7 @@ class TelemetryAgg:
 		elif ident == "NAV-DOP":
 			pd = getattr(msg, "pDOP", None)
 			if pd is not None:
-				self.pdop = float(pd/100.)
+				self.pdop = float(pd)
 		elif ident == "NAV-TIMEUTC":
 			self.utc_ok = bool(getattr(msg, "validUTC", 0))
 		elif ident == "NAV-PVT":
@@ -1327,9 +1327,8 @@ async def subscribe_loop(ser, ser_lock, mount, token):
 
 				# Periodic progress line with a mini histogram snapshot.
 				if time.time() - last_log > 5.0:
-					# Show top few IDs to avoid spam.
-					tops = ", ".join(f"{k}:{v}" for k, v in id_hist.most_common(5))
-					log.info("[subscribe] wrote %d RTCM frames to GNSS%s", total, (f" | top IDs: {tops}" if tops else ""))
+					ids = ", ".join(f"{k}:{id_hist[k]}" for k in sorted(id_hist))
+					log.info("[subscribe] wrote %d RTCM frames to GNSS%s", total, (f" | IDs: {ids}" if ids else ""))
 					last_log = time.time()
 
 	except asyncio.CancelledError:
