@@ -407,8 +407,14 @@ async def serial_demux_loop(ser, ser_lock, rtcm_q: asyncio.Queue, ubx_q: asyncio
 		while not stop_evt.is_set():
 			await asyncio.sleep(0)  # cooperate with scheduler
 			try:
+				if not getattr(ser, "is_open", True):
+					log.info("[demux] serial port closed; stopping demux")
+					break
 				# Serial read is not asynchronous. Guard with a lock so other writers config, publisher, subscriber) don't interleave.
 				async with ser_lock:
+					if not getattr(ser, "is_open", True):
+						log.info("[demux] serial port closed; stopping demux")
+						break
 					chunk = ser.read(4096)
 				if not chunk:
 					await asyncio.sleep(0.005)
@@ -1092,20 +1098,22 @@ async def ensure_demux_started(ser, ser_lock, call):
 		#_telem_pub_task = asyncio.create_task(telem_publisher(_call_writer, _agg, _telem_stop_evt))
 
 # Stop demux + telemetry tasks and place sentinels to exit cleanly
-async def stop_all_serial_tasks():
+async def stop_all_serial_tasks(emit_sentinels: bool = False):
 	global _demux_task, _telem_task, _telem_pub_task, _serial_stop_evt
 	if _serial_stop_evt:
 		_serial_stop_evt.set()
 	for t in (_demux_task, _telem_task, _telem_pub_task):
 		if t and not t.done():
 			t.cancel()
-			with contextlib.suppress(Exception):
+			with contextlib.suppress(asyncio.CancelledError, Exception):
 				await t
 	_demux_task = _telem_task = _telem_pub_task = None
-	for q in (_rtcm_q, _ubx_q):
-		if q:
-			with contextlib.suppress(Exception):
-				q.put_nowait(None)
+	_serial_stop_evt = None
+	if emit_sentinels:
+		for q in (_rtcm_q, _ubx_q):
+			if q:
+				with contextlib.suppress(Exception):
+					q.put_nowait(None)
 
 # Cancel the current role task (publish/subscribe) without touching queues.
 async def stop_role_task():
@@ -1796,7 +1804,7 @@ async def main():
 			if stop_task in done:
 				# Cooperative shutdown
 				await stop_role_task()
-				await stop_all_serial_tasks()
+				await stop_all_serial_tasks(emit_sentinels=True)
 				await cancel_and_wait(ctrl_task)
 				with contextlib.suppress(Exception):
 					ser.close()
@@ -1804,6 +1812,7 @@ async def main():
 
 			# Control exited: stop role, close serial, and retry after a short pause.
 			await stop_role_task()
+			await stop_all_serial_tasks()
 			with contextlib.suppress(Exception):
 				ser.close()
 			await asyncio.sleep(2.0)
