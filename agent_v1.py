@@ -156,7 +156,9 @@ class TelemetryAgg:
 		"temp_c", "qerr_ps", "utc_ok", "num_vis", "num_used",
 		"gps_used", "gal_used", "bds_used", "glo_used", "avg_cno", "pdop",
 		"fix_type", "gnss_fix_ok", "diff_soln", "carr_soln",
-		"confirmed_date", "confirmed_time", "nav_pvt_num_sv", "nav_sat_top"
+		"confirmed_date", "confirmed_time", "nav_pvt_num_sv", "nav_sat_top",
+		"nav_pvt_lat_deg", "nav_pvt_lon_deg", "nav_pvt_height_m",
+		"nav_pvt_hmsl_m", "nav_pvt_hacc_m", "nav_pvt_vacc_m"
 	)
 
 	def __init__(self) -> None:
@@ -180,6 +182,12 @@ class TelemetryAgg:
 		self.confirmed_time = None
 		self.nav_pvt_num_sv = None
 		self.nav_sat_top = []
+		self.nav_pvt_lat_deg = None
+		self.nav_pvt_lon_deg = None
+		self.nav_pvt_height_m = None
+		self.nav_pvt_hmsl_m = None
+		self.nav_pvt_hacc_m = None
+		self.nav_pvt_vacc_m = None
 
 	#Turn bytes into stream and then returned the raw and parsed data
 	def feed_ubx(self, frame: bytes) -> None:
@@ -280,12 +288,12 @@ class TelemetryAgg:
 		elif ident == "NAV-DOP":
 			pd = getattr(msg, "pDOP", None)
 			if pd is not None:
-				self.pdop = float(pd/100.)
+				self.pdop = float(pd)
 		elif ident == "NAV-TIMEUTC":
 			self.utc_ok = bool(getattr(msg, "validUTC", 0))
 		elif ident == "NAV-PVT":
 			payload = frame[6:-2]  # strip UBX header (6) and checksum (2)
-			if len(payload) < 24:
+			if len(payload) < 48:
 				return
 			flags = payload[21]
 			flags2 = payload[22]
@@ -296,6 +304,12 @@ class TelemetryAgg:
 			self.confirmed_date = bool(flags2 & 0x20)
 			self.confirmed_time = bool(flags2 & 0x40)
 			self.nav_pvt_num_sv = int(payload[23])
+			self.nav_pvt_lon_deg = int.from_bytes(payload[24:28], "little", signed=True) * 1e-7
+			self.nav_pvt_lat_deg = int.from_bytes(payload[28:32], "little", signed=True) * 1e-7
+			self.nav_pvt_height_m = int.from_bytes(payload[32:36], "little", signed=True) / 1000.0
+			self.nav_pvt_hmsl_m = int.from_bytes(payload[36:40], "little", signed=True) / 1000.0
+			self.nav_pvt_hacc_m = int.from_bytes(payload[40:44], "little", signed=False) / 1000.0
+			self.nav_pvt_vacc_m = int.from_bytes(payload[44:48], "little", signed=False) / 1000.0
 
 
 # Stop any existing telemetry publisher and start exactly one new instance.
@@ -393,8 +407,14 @@ async def serial_demux_loop(ser, ser_lock, rtcm_q: asyncio.Queue, ubx_q: asyncio
 		while not stop_evt.is_set():
 			await asyncio.sleep(0)  # cooperate with scheduler
 			try:
+				if not getattr(ser, "is_open", True):
+					log.info("[demux] serial port closed; stopping demux")
+					break
 				# Serial read is not asynchronous. Guard with a lock so other writers config, publisher, subscriber) don't interleave.
 				async with ser_lock:
+					if not getattr(ser, "is_open", True):
+						log.info("[demux] serial port closed; stopping demux")
+						break
 					chunk = ser.read(4096)
 				if not chunk:
 					await asyncio.sleep(0.005)
@@ -557,6 +577,12 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 						"confirmed_date": getattr(agg, "confirmed_date", None),
 						"confirmed_time": getattr(agg, "confirmed_time", None),
 						"nav_pvt_num_sv": getattr(agg, "nav_pvt_num_sv", None),
+						"nav_pvt_lat_deg": getattr(agg, "nav_pvt_lat_deg", None),
+						"nav_pvt_lon_deg": getattr(agg, "nav_pvt_lon_deg", None),
+						"nav_pvt_height_m": getattr(agg, "nav_pvt_height_m", None),
+						"nav_pvt_hmsl_m": getattr(agg, "nav_pvt_hmsl_m", None),
+						"nav_pvt_hacc_m": getattr(agg, "nav_pvt_hacc_m", None),
+						"nav_pvt_vacc_m": getattr(agg, "nav_pvt_vacc_m", None),
 						"nav_sat_top": getattr(agg, "nav_sat_top", []),
 					})
 				# fire-and-forget (don’t await if you want even looser coupling)
@@ -707,17 +733,60 @@ async def _valget_verify(ser, ser_lock, cfgData, layer: str = "RAM", timeout_per
 			# fallback
 		raise KeyError(f"Unsupported CFGDB entry type for {name}: {type(rec)}")
 
-	def _merge_cfg_results(results_by_name: dict, parsed):
-		# Your UBXMessage._set_attribute_cfgval() sets each key *name* as an attribute
-		# on the parsed message. Collect those into {NAME: value}.
-		d = getattr(parsed, "__dict__", {})
-		for k, v in d.items():
-			if k.startswith("_"):
+	def _merge_cfg_one(results_by_id: dict, key, val):
+		if isinstance(key, int):
+			kid = key
+		elif isinstance(key, str):
+			s = key.strip()
+			if s.lower().startswith("0x"):
+				kid = int(s, 16)
+			else:
+				m = re.match(r"^CFG_0X([0-9A-Fa-f]{8})$", s.upper())
+				if m:
+					kid = int(m.group(1), 16)
+				else:
+					try:
+						kid = _name_to_keyid(_norm(s))
+					except Exception:
+						return
+		else:
+			return
+		results_by_id[kid] = val
+
+	def _merge_cfg_results(results_by_id: dict, parsed):
+		cfg = getattr(parsed, "cfgData", None) or getattr(parsed, "cfgdata", None)
+		if isinstance(cfg, dict):
+			for k, v in cfg.items():
+				_merge_cfg_one(results_by_id, k, v)
+			return
+		if isinstance(cfg, list):
+			for item in cfg:
+				if isinstance(item, (tuple, list)) and len(item) >= 2:
+					_merge_cfg_one(results_by_id, item[0], item[1])
+			return
+
+		attrs = getattr(parsed, "__dict__", {})
+
+		# pyubx2 commonly exposes VALGET entries as CFG_* attributes.
+		for name, val in attrs.items():
+			if isinstance(name, str) and name.startswith("CFG_"):
+				_merge_cfg_one(results_by_id, name, val)
+
+		# Other variants expose numbered keyID/value attribute pairs.
+		for name, kid in attrs.items():
+			m = re.match(r"^(?:keyID|key|cfgKey|keyid)_?(\d+)$", name)
+			if not m:
 				continue
-			# skip non-CFG fields commonly present on some UBX objects
-			if k in ("identity",):
-				 continue
-			results_by_name[k.upper()] = v
+			idx = m.group(1)
+			for vname in (
+				f"val_{idx}", f"val{idx}", f"value_{idx}", f"value{idx}",
+				f"valU1_{idx}", f"valU2_{idx}", f"valU4_{idx}", f"valU8_{idx}",
+				f"valI1_{idx}", f"valI2_{idx}", f"valI4_{idx}", f"valI8_{idx}",
+				f"valR4_{idx}", f"valR8_{idx}",
+			):
+				if vname in attrs:
+					_merge_cfg_one(results_by_id, kid, attrs[vname])
+					break
 
 	def _equal(want, have) -> bool:
 		# Normalize tiny type differences: bool vs int, float rounding
@@ -733,9 +802,9 @@ async def _valget_verify(ser, ser_lock, cfgData, layer: str = "RAM", timeout_per
 		# strings or others → string compare
 		return str(have) == str(want)
 
-		# --- map requested names ----	
-	want_by_name = {}
-	want_names = []
+		# --- map requested names ----
+	want_by_id = {}
+	want_ids = []
 	for name, val in cfgData:
 		key = name.strip().upper().replace("-", "_")
 		try:
@@ -743,22 +812,23 @@ async def _valget_verify(ser, ser_lock, cfgData, layer: str = "RAM", timeout_per
 		except KeyError:
 			# If a name isn't in pyubx2 DB, skip it
 			continue
-		want_by_name[key] = val
-		want_names.append(key)
+		if kid not in want_by_id:
+			want_ids.append(kid)
+		want_by_id[kid] = (key, val)
 
-	if not want_names:
+	if not want_ids:
 		return True, []  # nothing to verify
 
 	poll_layer = {"RAM": 0, "BBR": 1, "FLASH": 2, "DEFAULT": 7}.get(layer.upper(), 0)	
 
-	got_by_name = {}
+	got_by_id = {}
 
 	# --- poll in chunks to keep replies small --------------------------------
 	CHUNK = 32
-	for i in range(0, len(want_names), CHUNK):
-		chunk_names = want_names[i:i+CHUNK]
+	for i in range(0, len(want_ids), CHUNK):
+		chunk_ids = want_ids[i:i+CHUNK]
 
-		msg_get = UBXMessage.config_poll(layer=poll_layer, position=0, keys=chunk_names)
+		msg_get = UBXMessage.config_poll(layer=poll_layer, position=0, keys=chunk_ids)
 
 		# Lock serial for the whole poll+read window so we don't race demux
 		async with ser_lock:
@@ -779,12 +849,11 @@ async def _valget_verify(ser, ser_lock, cfgData, layer: str = "RAM", timeout_per
 				
 				# We expect one or more CFG-VALGET replies covering the requested keys
 				if getattr(parsed, "identity", "") == "CFG-VALGET":
-					_merge_cfg_results(got_by_name, parsed)
+					_merge_cfg_results(got_by_id, parsed)
 					last_valget_time = time.time()
 					# Stop early if we have all keys from this chunk
-					if all(n in got_by_name for n in chunk_names):
+					if all(kid in got_by_id for kid in chunk_ids):
 						break
-						continue
 				# If quiet for 300ms after last relevant frame, assume done
 					if last_valget_time and (time.time() - last_valget_time) > 0.3:
 						break
@@ -792,9 +861,9 @@ async def _valget_verify(ser, ser_lock, cfgData, layer: str = "RAM", timeout_per
 # --- pretty-print & compare ----------------------------------------------
 	mismatches = []
 	ok = True
-	for cfg_name in want_names:
-		want = want_by_name[cfg_name]
-		have = got_by_name.get(cfg_name)
+	for kid in want_ids:
+		cfg_name, want = want_by_id[kid]
+		have = got_by_id.get(kid)
 		if have is None:
 			log.warning("%-36s : MISSING (wanted %r) [%s]", cfg_name, want, layer)
 			mismatches.append(f"{cfg_name}: missing (want={want!r})")
@@ -1029,20 +1098,22 @@ async def ensure_demux_started(ser, ser_lock, call):
 		#_telem_pub_task = asyncio.create_task(telem_publisher(_call_writer, _agg, _telem_stop_evt))
 
 # Stop demux + telemetry tasks and place sentinels to exit cleanly
-async def stop_all_serial_tasks():
+async def stop_all_serial_tasks(emit_sentinels: bool = False):
 	global _demux_task, _telem_task, _telem_pub_task, _serial_stop_evt
 	if _serial_stop_evt:
 		_serial_stop_evt.set()
 	for t in (_demux_task, _telem_task, _telem_pub_task):
 		if t and not t.done():
 			t.cancel()
-			with contextlib.suppress(Exception):
+			with contextlib.suppress(asyncio.CancelledError, Exception):
 				await t
 	_demux_task = _telem_task = _telem_pub_task = None
-	for q in (_rtcm_q, _ubx_q):
-		if q:
-			with contextlib.suppress(Exception):
-				q.put_nowait(None)
+	_serial_stop_evt = None
+	if emit_sentinels:
+		for q in (_rtcm_q, _ubx_q):
+			if q:
+				with contextlib.suppress(Exception):
+					q.put_nowait(None)
 
 # Cancel the current role task (publish/subscribe) without touching queues.
 async def stop_role_task():
@@ -1307,9 +1378,8 @@ async def subscribe_loop(ser, ser_lock, mount, token):
 
 				# Periodic progress line with a mini histogram snapshot.
 				if time.time() - last_log > 5.0:
-					# Show top few IDs to avoid spam.
-					tops = ", ".join(f"{k}:{v}" for k, v in id_hist.most_common(5))
-					log.info("[subscribe] wrote %d RTCM frames to GNSS%s", total, (f" | top IDs: {tops}" if tops else ""))
+					ids = ", ".join(f"{k}:{id_hist[k]}" for k in sorted(id_hist))
+					log.info("[subscribe] wrote %d RTCM frames to GNSS%s", total, (f" | IDs: {ids}" if ids else ""))
 					last_log = time.time()
 
 	except asyncio.CancelledError:
@@ -1734,7 +1804,7 @@ async def main():
 			if stop_task in done:
 				# Cooperative shutdown
 				await stop_role_task()
-				await stop_all_serial_tasks()
+				await stop_all_serial_tasks(emit_sentinels=True)
 				await cancel_and_wait(ctrl_task)
 				with contextlib.suppress(Exception):
 					ser.close()
@@ -1742,6 +1812,7 @@ async def main():
 
 			# Control exited: stop role, close serial, and retry after a short pause.
 			await stop_role_task()
+			await stop_all_serial_tasks()
 			with contextlib.suppress(Exception):
 				ser.close()
 			await asyncio.sleep(2.0)
