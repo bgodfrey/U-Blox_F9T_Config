@@ -849,10 +849,10 @@ def _build_plan_from_manifest(doc: dict, args: argparse.Namespace) -> Dict[str, 
     dev_cfg = None
     discovered_port = None
 
-    # If requested, try to auto-detect SEC-UNIQID first. If no port is provided
-    # by CLI or manifest, discover the u-blox serial port too.
+    # If requested, try to auto-detect SEC-UNIQID first. Only an explicit CLI
+    # --port is trusted here; manifest serial paths can go stale between hosts.
     if getattr(args, "auto_uid", False):
-        tmp_port = args.port or (g.get("port") if isinstance(g, dict) else None)
+        tmp_port = args.port
         tmp_baud = args.baud or int((g.get("baud") if isinstance(g, dict) else None) or 115200)
         if tmp_port:
             with serial.Serial(tmp_port, baudrate=tmp_baud, timeout=0.5, write_timeout=0.5) as ser:
@@ -867,9 +867,10 @@ def _build_plan_from_manifest(doc: dict, args: argparse.Namespace) -> Dict[str, 
     role_name = str(dev_cfg.get("role", ""))
     role_cfg = (roles.get(role_name, {}) or {}) if role_name else {}
 
-    # Serial settings
+    # Serial settings. Only --port pins the local serial path; manifest ports are
+    # metadata/fallback from another host and should not prevent local discovery.
     serial_cfg = dev_cfg.get("serial", {}) or {}
-    port = args.port or serial_cfg.get("port") or g.get("port") or discovered_port
+    port = args.port or discovered_port
     if not port:
         port, _ = discover_ublox_port()
     baud = int(args.baud or serial_cfg.get("baud") or g.get("baud") or 115200)
