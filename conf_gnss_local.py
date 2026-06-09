@@ -8,7 +8,7 @@ Description: Script to configure ZED F9P/T receivers from a JSON file. Heavy hel
 License: MIT License
 """
 
-import argparse, csv, os, pyubx2, re, serial, sys, time
+import argparse, csv, glob, os, pyubx2, re, serial, sys, time
 import logging
 import json5 as json
 from typing import List, Tuple, Optional, Dict, Any
@@ -643,6 +643,35 @@ def get_f9t_unique_id(ser: serial.Serial, timeout: float = 3.0) -> str:
     raise RuntimeError("Timeout waiting for SEC-UNIQID response from device.")
 
 
+def discover_ublox_port(timeout: float = 0.8) -> Tuple[str, str]:
+    """
+    Probe likely Linux serial paths and return (port, SEC-UNIQID) for the first
+    u-blox receiver that responds.
+    """
+    paths = (
+        sorted(glob.glob("/dev/serial/by-id/*")) +
+        sorted(glob.glob("/dev/ttyACM*")) +
+        sorted(glob.glob("/dev/ttyUSB*"))
+    )
+    candidates = list(dict.fromkeys(paths))
+    if not candidates:
+        raise RuntimeError("No serial candidates found (/dev/serial/by-id, /dev/ttyACM*, /dev/ttyUSB*)")
+
+    for port in candidates:
+        print(f"[conf_gnss] probing serial candidate {port}", flush=True)
+        try:
+            with serial.Serial(port, baudrate=115200, timeout=0.2, write_timeout=0.2) as ser:
+                uid = get_f9t_unique_id(ser, timeout=timeout)
+                print(f"[conf_gnss] discovered {port} uid={uid}", flush=True)
+                return port, uid
+        except Exception as e:
+            if isinstance(e, KeyboardInterrupt):
+                raise
+            print(f"[conf_gnss] skipping {port}: {e}", flush=True)
+
+    raise RuntimeError("No u-blox device found")
+
+
 # add helper
 def lock_config(ser, layers: list[str]) -> list[bool]:
     """
@@ -818,14 +847,19 @@ def _build_plan_from_manifest(doc: dict, args: argparse.Namespace) -> Dict[str, 
 
     uid = None
     dev_cfg = None
+    discovered_port = None
 
-    # If requested, try to auto-detect SEC-UNIQID first (requires a port/baud).
+    # If requested, try to auto-detect SEC-UNIQID first. If no port is provided
+    # by CLI or manifest, discover the u-blox serial port too.
     if getattr(args, "auto_uid", False):
-        # pick a provisional serial port/baud: CLI overrides > manifest global defaults > /dev/ttyACM0
-        tmp_port = args.port or (g.get("port") if isinstance(g, dict) else None) or "/dev/ttyACM0"
+        tmp_port = args.port or (g.get("port") if isinstance(g, dict) else None)
         tmp_baud = args.baud or int((g.get("baud") if isinstance(g, dict) else None) or 115200)
-        with serial.Serial(tmp_port, baudrate=tmp_baud, timeout=0.5) as ser:
-            uid = get_f9t_unique_id(ser)
+        if tmp_port:
+            with serial.Serial(tmp_port, baudrate=tmp_baud, timeout=0.5, write_timeout=0.5) as ser:
+                uid = get_f9t_unique_id(ser)
+        else:
+            tmp_port, uid = discover_ublox_port()
+            discovered_port = tmp_port
         uid, dev_cfg = _select_manifest_device(doc, uid=uid, alias=None)
     else:
         uid, dev_cfg = _select_manifest_device(doc, uid=args.uid, alias=args.alias)
@@ -835,7 +869,9 @@ def _build_plan_from_manifest(doc: dict, args: argparse.Namespace) -> Dict[str, 
 
     # Serial settings
     serial_cfg = dev_cfg.get("serial", {}) or {}
-    port = args.port or serial_cfg.get("port") or g.get("port") or "/dev/ttyACM0"
+    port = args.port or serial_cfg.get("port") or g.get("port") or discovered_port
+    if not port:
+        port, _ = discover_ublox_port()
     baud = int(args.baud or serial_cfg.get("baud") or g.get("baud") or 115200)
 
     # Layer policy
@@ -904,7 +940,9 @@ def main():
         sel = doc.get("_manifest", {})
         print(f"Selected manifest device: uid={sel.get('selected_uid')} alias={sel.get('alias')} role={sel.get('role')}")
 
-    port = doc.get("port", "/dev/ttyACM0")
+    port = doc.get("port")
+    if not port:
+        port, _ = discover_ublox_port()
     print('PORT IS: ' + str(port))
     baud = int(doc.get("baud", 115200))
     apply_layers = doc.get("apply_to_layers", ["RAM"])
