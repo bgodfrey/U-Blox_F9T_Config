@@ -36,6 +36,17 @@
     "required": false
   },
 
+  "modes": {
+    "differential": {
+      "timing_mode": "differential",
+      "manifest": "manifest_f9t.json5"
+    },
+    "absolute": {
+      "timing_mode": "absolute",
+      "manifest": "manifest_f9t_absolute.json5"
+    }
+  },
+
   "server": {
     "daq_name": "panoseti-palomar",
     "host": "localhost",

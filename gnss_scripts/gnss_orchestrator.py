@@ -141,6 +141,25 @@ def _resolve_under_repo(repo: str, value: str) -> str:
     return str(Path(repo) / value)
 
 
+def _mode_settings(config: dict[str, Any], mode: str) -> dict[str, Any]:
+    """Return manifest/timing settings for a start mode."""
+
+    modes = config.get("modes", {})
+    if mode in modes:
+        settings = dict(modes[mode])
+    elif mode == "differential":
+        settings = {"timing_mode": "differential"}
+    elif mode == "absolute":
+        settings = {"timing_mode": "absolute", "manifest": "manifest_f9t_absolute.json5"}
+    else:
+        raise ValueError(f"unknown GNSS start mode {mode!r}")
+
+    if "receiver_manifest" not in settings and "manifest" in settings:
+        settings["receiver_manifest"] = settings["manifest"]
+    settings.setdefault("timing_mode", mode)
+    return settings
+
+
 def _run(args: list[str], timeout: float) -> CommandResult:
     """Run a local command and normalize the result.
 
@@ -397,6 +416,10 @@ def _server_status(config: dict[str, Any]) -> dict[str, Any]:
     server_script = _resolve_under_repo(repo, script) if repo else script
     logdir = str(server.get("logdir", "logging"))
     logdir_path = _resolve_under_repo(repo, logdir) if repo else logdir
+    receiver_manifest = server.get("receiver_manifest")
+    receiver_manifest_path = ""
+    if receiver_manifest:
+        receiver_manifest_path = _resolve_under_repo(repo, str(receiver_manifest)) if repo else str(receiver_manifest)
 
     # Required-field checks catch malformed inventory entries before we try to
     # use those values in subprocess commands.
@@ -414,6 +437,8 @@ def _server_status(config: dict[str, Any]) -> dict[str, Any]:
         checks.append(Check("server repo directory", Path(repo).is_dir(), repo))
     checks.append(Check("server script file", Path(server_script).is_file(), server_script))
     checks.append(Check("server logdir parent", Path(logdir_path).parent.is_dir(), logdir_path))
+    if receiver_manifest_path:
+        checks.append(Check("server receiver manifest", Path(receiver_manifest_path).is_file(), receiver_manifest_path))
 
     return {
         "kind": "server",
@@ -426,6 +451,7 @@ def _server_status(config: dict[str, Any]) -> dict[str, Any]:
             "repo": repo,
             "script": server_script,
             "logdir": logdir_path,
+            "receiver_manifest": receiver_manifest_path,
         },
     }
 
@@ -620,11 +646,13 @@ def _server_launch_script(server_status: dict[str, Any]) -> tuple[str, str]:
         resolved["script"],
         "--ip",
         server.get("bind_addr", "0.0.0.0:50051"),
+        "--timing-mode",
+        server.get("timing_mode", "differential"),
         "-v",
         server.get("verbosity", 2),
     ]
-    if server.get("receiver_manifest"):
-        server_args.extend(["--config", server["receiver_manifest"]])
+    if resolved.get("receiver_manifest"):
+        server_args.extend(["--config", resolved["receiver_manifest"]])
 
     inner = f"exec {_shell_join(server_args)} >> {shlex.quote(log_path)} 2>&1"
     script = "\n".join(
@@ -641,8 +669,17 @@ def _server_launch_script(server_status: dict[str, Any]) -> tuple[str, str]:
     return script, log_path
 
 
-def _start_server(config: dict[str, Any], *, dry_run: bool) -> StartResult:
+def _start_server(config: dict[str, Any], *, dry_run: bool, mode: str = "differential") -> StartResult:
     """Start the local GNSS server, or describe the command in dry-run mode."""
+
+    mode_config = _mode_settings(config, mode)
+    if mode_config.get("receiver_manifest"):
+        config = dict(config)
+        config["server"] = dict(config.get("server", {}))
+        config["server"]["receiver_manifest"] = mode_config["receiver_manifest"]
+    config = dict(config)
+    config["server"] = dict(config.get("server", {}))
+    config["server"]["timing_mode"] = mode_config.get("timing_mode", mode)
 
     server_status = _server_status(config)
     defaults = config.get("defaults", {})
@@ -673,7 +710,7 @@ def _start_server(config: dict[str, Any], *, dry_run: bool) -> StartResult:
             daq_name=str(server_status["daq_name"]),
             host=str(server_status["host"]),
             status="dry-run",
-            detail=f"would start screen {server.get('screen')} with log {log_path}",
+            detail=f"would start screen {server.get('screen')} in {server.get('timing_mode')} mode with log {log_path}",
             required=True,
             command=command,
             script=script,
@@ -812,6 +849,7 @@ def start_gnss(
     nodes: list[str] | None = None,
     dry_run: bool = False,
     include_disabled: bool = False,
+    mode: str = "differential",
 ) -> dict[str, Any]:
     """Start the GNSS server and configured remote agents.
 
@@ -828,15 +866,15 @@ def start_gnss(
 
     config = load_config(config_path)
     defaults = config.get("defaults", {})
-    results = [_start_server(config, dry_run=dry_run)]
+    results = [_start_server(config, dry_run=dry_run, mode=mode)]
 
     if results[0].status == "failed":
-        return {"config_path": str(config_path), "dry_run": dry_run, "results": results}
+        return {"config_path": str(config_path), "dry_run": dry_run, "mode": mode, "results": results}
 
     for key, raw_node in _selected_node_items(config, nodes, include_disabled=include_disabled):
         results.append(_start_node(key, raw_node, defaults, dry_run=dry_run))
 
-    return {"config_path": str(config_path), "dry_run": dry_run, "results": results}
+    return {"config_path": str(config_path), "dry_run": dry_run, "mode": mode, "results": results}
 
 
 def _stop_script(screen_name: str, process_match: str, grace_sec: int, log_path: str | None) -> str:
@@ -1132,6 +1170,8 @@ def _print_start(report: dict[str, Any]) -> None:
     mode = "dry-run" if report.get("dry_run") else "start"
     print(f"Config: {report['config_path']}")
     print(f"Mode:   {mode}")
+    if report.get("mode"):
+        print(f"Timing: {report['mode']}")
     print()
     for item in report["results"]:
         print(f"{item.status:8} {item.kind:6} {item.key:12} {item.daq_name:18} host={item.host}")
@@ -1214,6 +1254,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     start = sub.add_parser("start", help="start the GNSS server and selected agents")
     start.add_argument("--node", action="append", default=[], help="limit start to a node key, host, or DAQ name")
+    start.add_argument("--mode", choices=["differential", "absolute"], default="differential", help="GNSS timing mode")
     start.add_argument("--include-disabled", action="store_true", help="include disabled nodes")
     start.add_argument("--dry-run", action="store_true", help="show launch commands without running them")
     start.add_argument("--json", action="store_true", help="emit machine-readable JSON")
@@ -1264,6 +1305,7 @@ def main(argv: list[str] | None = None) -> int:
             nodes=args.node,
             dry_run=args.dry_run,
             include_disabled=args.include_disabled,
+            mode=args.mode,
         )
         if args.json:
             print(json.dumps(_jsonable(report), indent=2, sort_keys=True))

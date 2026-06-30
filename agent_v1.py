@@ -1127,7 +1127,7 @@ async def stop_role_task():
 	log.debug("Role cleared")
 
 
-# Start the role task selected by the server (`BASE` → publish, `RECEIVER` → subscribe).
+# Start the role task selected by the server.
 async def start_role_task(role_enum: int, ser, ser_lock, mount: str, token: str, rtcm_q=None):
 	await stop_role_task()  # ensure only one role runs at a time
 	if role_enum == pb.Role.BASE:
@@ -1136,6 +1136,11 @@ async def start_role_task(role_enum: int, ser, ser_lock, mount: str, token: str,
 	elif role_enum == pb.Role.RECEIVER:
 		_role["task"] = asyncio.create_task(subscribe_loop(ser, ser_lock, mount, token))
 		_role["name"] = "RECEIVER"
+	elif role_enum == pb.Role.TIMING_ONLY:
+		_role["task"] = None
+		_role["name"] = "TIMING_ONLY"
+		log.info("Set role to TIMING_ONLY (config + telemetry; no RTCM publish/subscribe)")
+		return
 	else:
 		_role["task"] = None
 		_role["name"] = "UNSPECIFIED"
@@ -1495,6 +1500,7 @@ async def control_pipe(ser, ser_lock, uid_hex, fwver, protver, hwver, mount_toke
 						# Role-aware RTCM USB visibility: helpful for local debugging/logging.
 						role_enum = mount_token_holder.get("role")
 						is_base   = (role_enum == pb.Role.BASE)
+						is_receiver = (role_enum == pb.Role.RECEIVER)
 						# Enable/disable RTCM over USB based on role (agent side visibility)
 						for typ in (1005,1077,1087,1097,1127,1230,4072):
 							# If we're a base, emit these over USB; if a receiver, mute them.
@@ -1551,7 +1557,7 @@ async def control_pipe(ser, ser_lock, uid_hex, fwver, protver, hwver, mount_toke
 						if _VERBOSE_TELEM:
 							await _cfg_msg_usb_rate_ubx(ser, ser_lock, 0x01, 0x07, 1)  # NAV-PVT
 
-						if not is_base:
+						if is_receiver:
 							# Device-level proof it’s ingesting RTCM:
 							await _cfg_msg_usb_rate_ubx(ser, ser_lock, 0x02, 0x32, 1)  # UBX-RXM-RTCM @ USB
 

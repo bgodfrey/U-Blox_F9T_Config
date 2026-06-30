@@ -40,6 +40,8 @@ import json5
 import caster_setup_pb2 as pb
 import caster_setup_pb2_grpc as rpc
 
+log = logging.getLogger("server")
+
 def find_repo_root() -> Path:
 	try:
 		return Path(subprocess.check_output(["git", "rev-parse", "--show-toplevel"], stderr=subprocess.DEVNULL, universal_newlines=True,).strip())
@@ -83,6 +85,7 @@ DEFAULT_POLICY = {
 	"subscribe_mount": "BASE",
 	"subscribe_token": "SUBTOKEN",
 	"config_version": 1,
+	"timing_mode": "differential",
 }
 
 # Per-device state shared across sessions (simple in-memory variant)
@@ -118,6 +121,7 @@ def parse_args():
 	p.add_argument("--config", default = None, help = "optional path to config file")
 	p.add_argument("--ip", default = "0.0.0.0:50051", help = "IP address to bind to default is 0.0.0.0:50051")
 	p.add_argument("--log-file", default="", help="optional file path")
+	p.add_argument("--timing-mode", choices=["differential", "absolute"], default="differential", help="runtime timing mode")
 	p.add_argument("-v", "--verbosity", type=int, default=2, help="0=errors, 1=warn, 2=info, 3=debug")
 	return p.parse_args()
 
@@ -237,9 +241,29 @@ def _llh_to_cfg_tmode_llh(lat_deg: float, lon_deg: float, h_m: float, acc_m: flo
 	]
 
 
-# Get role (base/receiver) as well as device ID from the manifest.
+def _role_enum_from_string(role_str: str) -> int:
+	role = (role_str or "").strip().lower()
+	if role == "base":
+		return pb.Role.BASE
+	if role == "receiver":
+		return pb.Role.RECEIVER
+	if role == "timing_only":
+		return pb.Role.TIMING_ONLY
+	raise ValueError("role must be one of 'base', 'receiver', or 'timing_only'")
 
-def decide_role_and_creds_for_device(man: dict, device_id: str) -> tuple[int, str, str, str]:
+
+def _role_string_from_enum(role_enum: int) -> str:
+	if role_enum == pb.Role.BASE:
+		return "base"
+	if role_enum == pb.Role.RECEIVER:
+		return "receiver"
+	if role_enum == pb.Role.TIMING_ONLY:
+		return "timing_only"
+	return "unspecified"
+
+
+# Get role (base/receiver/timing_only) as well as device ID from the manifest.
+def decide_role_and_creds_for_device(man: dict, device_id: str, timing_mode: str) -> tuple[int, str, str, str]:
 	"""Return (role_enum, mount, token, alias) using DEFAULT_POLICY creds."""
 	dev_key = device_id.strip().upper()
 	dev = (man.get("devices") or {}).get(dev_key)
@@ -247,17 +271,24 @@ def decide_role_and_creds_for_device(man: dict, device_id: str) -> tuple[int, st
 		raise KeyError(f"device {dev_key} not found in manifest devices")
 
 	role_str = (dev.get("role") or "").strip().lower()
-	if role_str not in ("base", "receiver"):
-		raise ValueError(f"device {dev_key} has no valid role ('base'|'receiver')")
+	if timing_mode == "absolute":
+		role_enum = pb.Role.TIMING_ONLY
+	else:
+		try:
+			role_enum = _role_enum_from_string(role_str)
+		except ValueError as exc:
+			raise ValueError(f"device {dev_key} has no valid role") from exc
 
-	role_enum = pb.Role.BASE if role_str == "base" else pb.Role.RECEIVER
-	log.info("Role enum: %s", role_enum)
+	log.info("Role enum: %s (%s)", role_enum, pb.Role.Name(role_enum))
 	if role_enum == pb.Role.BASE:
 		mount = DEFAULT_POLICY["publish_mount"]
 		token = DEFAULT_POLICY.get("publish_token", "")
-	else:
+	elif role_enum == pb.Role.RECEIVER:
 		mount = DEFAULT_POLICY["subscribe_mount"]
 		token = DEFAULT_POLICY.get("subscribe_token", "")
+	else:
+		mount = ""
+		token = ""
 
 	alias = dev.get("alias", "")
 	return role_enum, mount, token, alias
@@ -268,12 +299,13 @@ def decide_role_and_creds_for_device(man: dict, device_id: str) -> tuple[int, st
 # seemed extra. But, in principle, you could.
 async def cfg_from_manifest_for_device(man: dict, device_id: str, role_enum: int) -> tuple[list[str], list[dict]]:
 
-	role_str = "base" if role_enum == pb.Role.BASE else "receiver"
+	role_str = _role_string_from_enum(role_enum)
 	layers = (man.get("global", {}).get("apply_to_layers")) or ["RAM"]
 
 	items: list[dict] = []
 	items += (man.get("global", {}).get("config") or [])
-	items += (man.get("role", {}).get(role_str, {}).get("config") or [])
+	if role_str != "unspecified":
+		items += (man.get("role", {}).get(role_str, {}).get("config") or [])
 
 	dev = man.get("devices", {}).get(device_id.strip().upper(), {})
 	items += (dev.get("config") or [])
@@ -309,11 +341,14 @@ async def heartbeat(out_q: asyncio.Queue, period: float = 5.0) -> None:
 class CasterServicer(rpc.CasterServicer):
    
 
-	def __init__(self, hub: Hub) -> None:
+	def __init__(self, hub: Hub, timing_mode: str = "differential") -> None:
 		self.hub = hub
+		self.timing_mode = timing_mode
 
 	# Base publish 
 	async def Publish(self, request_iterator, context):
+		if self.timing_mode == "absolute":
+			await context.abort(grpc.StatusCode.FAILED_PRECONDITION, "RTCM publish is disabled in absolute timing mode")
 		# Logs that the handler is active and initializes a running counter of RTCM frames (frames). This counter is used only to report back in the final ACK.        
 		log.info("[server] Publish: handler started")
 		frames = 0
@@ -355,6 +390,8 @@ class CasterServicer(rpc.CasterServicer):
 
 	# Receiver subscribe
 	async def Subscribe(self, request, context):
+		if self.timing_mode == "absolute":
+			await context.abort(grpc.StatusCode.FAILED_PRECONDITION, "RTCM subscribe is disabled in absolute timing mode")
 		log.info("Creating a subscribe queue for mount=%r ...", request.mount)		
 		q = self.hub.attach(request.mount)
 		try:
@@ -371,6 +408,9 @@ class CasterServicer(rpc.CasterServicer):
 # Bidirectional stream allowing for configuration of devices, ping-ing, and telemetry data
 class ControlServicer(rpc.ControlServicer):
 	"""Control plane: hello/ack, config push, ping, telemetry."""
+
+	def __init__(self, timing_mode: str = "differential") -> None:
+		self.timing_mode = timing_mode
 
 	async def Pipe(self, request_iterator, context):
 		log.info("[server] Control.Pipe: opened")
@@ -440,7 +480,7 @@ class ControlServicer(rpc.ControlServicer):
 							man = json5.loads(text)
 
 							# Decide role/mount/token/alias for this device using manifest + defaults
-							role_enum, mount, token, alias = decide_role_and_creds_for_device(man, device_id)
+							role_enum, mount, token, alias = decide_role_and_creds_for_device(man, device_id, self.timing_mode)
 							
 							# Send hello acknowledgement to the agent with role/mount and config version
 							# (This unblocks the agent to configure its publish/subscribe and behavior.)
@@ -658,7 +698,7 @@ Lifecycle:
 	   - notify Hub subscribers (unblock) and
 	   - stop the gRPC server with a grace period.
 """
-async def serve(addr: str = "0.0.0.0:50051") -> None:
+async def serve(addr: str = "0.0.0.0:50051", timing_mode: str = "differential") -> None:
 	#global _telem_fwd_task
 	stop = asyncio.Event() # will be set on SIGINT/SIGTERM
 	install_signal_handlers(stop) # attach signal handlers to set `stop`
@@ -672,14 +712,14 @@ async def serve(addr: str = "0.0.0.0:50051") -> None:
 	#	("grpc.keepalive_permit_without_calls", 1), # allow PINGs without active calls
 	#])
 	server = grpc.aio.server()
-	rpc.add_CasterServicer_to_server(CasterServicer(hub), server)
-	rpc.add_ControlServicer_to_server(ControlServicer(), server)
+	rpc.add_CasterServicer_to_server(CasterServicer(hub, timing_mode=timing_mode), server)
+	rpc.add_ControlServicer_to_server(ControlServicer(timing_mode=timing_mode), server)
 
 
 	# Bind to the requested address/port (plaintext for now)
 	server.add_insecure_port(addr)
 	print("listening on", addr)
-	log.info("listening on %s", addr)
+	log.info("listening on %s timing_mode=%s", addr, timing_mode)
 	
 	# Start accepting RPCs
 	await server.start()
@@ -727,6 +767,8 @@ if __name__ == "__main__":
 		if args.config:
 			DEFAULT_POLICY['manifest'] = args.config
 			log.info(f"set config file to {args.config}")
+		DEFAULT_POLICY["timing_mode"] = args.timing_mode
+		log.info("timing mode set to %s", args.timing_mode)
 		try:
 			dest_config = os.path.join(LOGGING_DIR, f"config_{_START_STR}.json5")
 			print(LOGGING_DIR)
@@ -734,6 +776,6 @@ if __name__ == "__main__":
 			log.info(f"file '{DEFAULT_POLICY['manifest']}' copied to '{dest_config}' successfully.")
 		except FileNotFoundError:
 			log.error(f"[server] source file '{DEFAULT_POLICY['manifest']}' not found.")
-		asyncio.run(serve(args.ip))
+		asyncio.run(serve(args.ip, timing_mode=args.timing_mode))
 	except KeyboardInterrupt:
 		pass

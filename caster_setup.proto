@@ -5,6 +5,7 @@ enum Role {
   UNSPECIFIED = 0;  // default if older agents don't send a role
   BASE        = 1;  // produces RTCM to caster (e.g., ZED-F9P base)
   RECEIVER    = 2;  // consumes RTCM from caster (e.g., ZED-F9T timing rover)
+  TIMING_ONLY = 3;  // config + telemetry only; no RTCM publish/subscribe
   // (room for future: ROLE_MONITOR, ROLE_SIMULATOR, etc.)
 }
 
