@@ -252,6 +252,21 @@ def _screen_grep_pattern(screen_name: str) -> str:
     return rf"\.{screen_name}[[:space:]]"
 
 
+def _screen_verify_script(screen_name: str, log_path: str) -> list[str]:
+    """Return Bash lines that verify a screen session and print diagnostics."""
+
+    pattern = shlex.quote(_screen_grep_pattern(screen_name))
+    log = shlex.quote(log_path)
+    return [
+        f"if ! screen -ls | grep -q -- {pattern}; then",
+        f"  echo '[FAIL] screen {screen_name} not found after launch'",
+        f"  echo '[INFO] log: {log_path}'",
+        f"  tail -n 60 {log} 2>/dev/null || true",
+        "  exit 1",
+        "fi",
+    ]
+
+
 def _all_checks_ok(item: dict[str, Any]) -> bool:
     """Return true when every Check in a status item passed."""
 
@@ -546,7 +561,7 @@ def _server_launch_script(server_status: dict[str, Any]) -> tuple[str, str]:
             "sleep 0.5",
             f"screen -dmS {shlex.quote(screen)} bash -c {shlex.quote(inner)}",
             "sleep 1",
-            f"screen -ls | grep -q -- {shlex.quote(_screen_grep_pattern(screen))}",
+            *_screen_verify_script(screen, log_path),
         ]
     )
     return script, log_path
@@ -636,7 +651,7 @@ def _remote_agent_launch_script(node_status: dict[str, Any]) -> tuple[str, str]:
             f"cd {shlex.quote(resolved['repo'])}",
             f"screen -dmS {shlex.quote(screen)} bash -c {shlex.quote(inner)}",
             "sleep 1",
-            f"screen -ls | grep -q -- {shlex.quote(_screen_grep_pattern(screen))}",
+            *_screen_verify_script(screen, log_path),
         ]
     )
     return script, log_path
