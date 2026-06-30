@@ -151,13 +151,13 @@ def _run(args: list[str], timeout: float) -> CommandResult:
 
 
 def _run_bash(script: str, timeout: float) -> CommandResult:
-    """Run a local Bash script through bash -lc.
+    """Run a local Bash script through bash -c.
 
     This is used for local screen orchestration, where shell features like
     redirection are the clearest way to express the launch command.
     """
 
-    return _run(["bash", "-lc", script], timeout=timeout)
+    return _run(["bash", "-c", script], timeout=timeout)
 
 
 def _ssh_base(node: dict[str, Any]) -> list[str]:
@@ -189,7 +189,7 @@ def _remote_run(node: dict[str, Any], script: str, timeout: float | None = None)
     Args:
         node: A resolved node config dictionary.
         script: Bash code to execute remotely. It is shell-quoted before being
-            passed to `bash -lc` on the remote host.
+            passed to `bash -c` on the remote host.
         timeout: Optional total timeout for the SSH command.
 
     Returns:
@@ -198,7 +198,7 @@ def _remote_run(node: dict[str, Any], script: str, timeout: float | None = None)
 
     if timeout is None:
         timeout = float(node.get("ssh_connect_timeout_sec", 3)) + 10.0
-    return _run(_ssh_base(node) + ["bash -lc " + shlex.quote(script)], timeout=timeout)
+    return _run(_ssh_base(node) + ["bash -c " + shlex.quote(script)], timeout=timeout)
 
 
 def _remote_test(
@@ -516,7 +516,7 @@ def _server_launch_script(server_status: dict[str, Any]) -> tuple[str, str]:
     """Build the local Bash script that starts the GNSS server in screen.
 
     Returns:
-        A tuple of (script, log_path). The script is suitable for bash -lc.
+        A tuple of (script, log_path). The script is suitable for bash -c.
     """
 
     server = server_status["config"]
@@ -544,7 +544,7 @@ def _server_launch_script(server_status: dict[str, Any]) -> tuple[str, str]:
             f"mkdir -p {shlex.quote(logdir)}",
             f"screen -S {shlex.quote(screen)} -X quit >/dev/null 2>&1 || true",
             "sleep 0.5",
-            f"screen -dmS {shlex.quote(screen)} bash -lc {shlex.quote(inner)}",
+            f"screen -dmS {shlex.quote(screen)} bash -c {shlex.quote(inner)}",
             "sleep 1",
             f"screen -ls | grep -q -- {shlex.quote(_screen_grep_pattern(screen))}",
         ]
@@ -562,7 +562,7 @@ def _start_server(config: dict[str, Any], *, dry_run: bool) -> StartResult:
         server["screen"] = server["server_screen"]
     server_status["config"] = server
     script, log_path = _server_launch_script(server_status)
-    command = "bash -lc " + shlex.quote(script)
+    command = "bash -c " + shlex.quote(script)
 
     if not _all_checks_ok(server_status):
         return StartResult(
@@ -634,7 +634,7 @@ def _remote_agent_launch_script(node_status: dict[str, Any]) -> tuple[str, str]:
             f"screen -S {shlex.quote(screen)} -X quit >/dev/null 2>&1 || true",
             "sleep 0.5",
             f"cd {shlex.quote(resolved['repo'])}",
-            f"screen -dmS {shlex.quote(screen)} bash -lc {shlex.quote(inner)}",
+            f"screen -dmS {shlex.quote(screen)} bash -c {shlex.quote(inner)}",
             "sleep 1",
             f"screen -ls | grep -q -- {shlex.quote(_screen_grep_pattern(screen))}",
         ]
@@ -655,7 +655,7 @@ def _start_node(
     node = _merge(defaults, raw_node)
     node_status["config"] = node
     script, log_path = _remote_agent_launch_script(node_status)
-    command = _shell_join(_ssh_base(node) + ["bash -lc " + shlex.quote(script)])
+    command = _shell_join(_ssh_base(node) + ["bash -c " + shlex.quote(script)])
     required = _str_bool(node.get("required", False))
     start_only_if_receiver_detected = _str_bool(node.get("start_only_if_receiver_detected", True))
 
