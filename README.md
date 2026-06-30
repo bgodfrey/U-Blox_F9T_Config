@@ -173,7 +173,7 @@ The configuration file is, by default, given in *manifest_f9t.json5*. It defines
 
 ## Telemetry Fields
 
-The agent writes local telemetry as JSON5 lines. The standard fields are also sent to the server over the control stream. When the agent is run with `-v 3`, it adds extra local-only diagnostic fields from `UBX-NAV-PVT` and `UBX-NAV-SAT`.
+The agent writes local telemetry as JSON Lines (`.jsonl`). Each line is valid JSON and can be loaded with Python's built-in `json.loads`. The standard fields are also sent to the server over the control stream. When the agent is run with `-v 3`, it adds extra local-only diagnostic fields from `UBX-NAV-PVT` and `UBX-NAV-SAT`.
 
 Standard fields:
 
@@ -250,7 +250,7 @@ optional arguments:
 Notes
 
 * The default log location is `./logging`
-* The default telemetry location is `./telem`. Note that in order to load the json objects in each line of the jsonl file, that you will need to use the json5 package.
+* The default telemetry location is `./telem`. Each line in the `.jsonl` files is valid JSON and can be loaded with Python's built-in `json` package.
 * The default name is SERVER_{UTC time}
 * The default configuration file is `manifest_f9t.json5`. This gets copied into the log directory with the start date/time so you know all your settings for a run.
 * You can also get help by typing in `python server_v1.py --help`

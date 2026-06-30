@@ -44,7 +44,7 @@ from serial import Serial
 from pyubx2.exceptions import UBXMessageError, UBXParseError, UBXStreamError, UBXTypeError
 from pyubx2 import POLL, SET, UBX_CONFIG_DATABASE, UBXReader, UBXMessage, UBX_PROTOCOL
 from pyubx2 import UBX_CONFIG_DATABASE as CFGDB
-import argparse, asyncio, contextlib, glob, io, json5, logging, os, re, signal, struct, sys, time
+import argparse, asyncio, contextlib, glob, io, json, json5, logging, os, re, signal, struct, sys, time
 import grpc, serial
 import caster_setup_pb2 as pb
 import caster_setup_pb2_grpc as rpc
@@ -659,7 +659,7 @@ def set_telem_log_alias(alias: str, device_id: str = "") -> None:
 
 # Append one JSON line without blocking the event loop.
 async def _append_jsonl(record: dict):
-	line = json5.dumps(record, separators=(",", ":")) + "\n"
+	line = json.dumps(record, separators=(",", ":")) + "\n"
 	path = _TELEM_PATH  # use the global current path
 	def _write():
 		os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
