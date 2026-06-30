@@ -70,8 +70,6 @@ SAVE_TELEM_REMOTE = True          # send to server over Control.Pipe
 _VERBOSE_TELEM = False            # include extra local-only telemetry when -v 3
 TELEM_DIR  = "./telem"  # or "/var/log/f9t_telem.jsonl"
 LOG_DIR = "./logging"
-os.makedirs(TELEM_DIR, exist_ok=True)
-os.makedirs(LOG_DIR, exist_ok=True)
 
 # one fixed timestamp for this agent run
 _START_TS  = datetime.now(timezone.utc)
@@ -1686,10 +1684,26 @@ def parse_args():
 	p = argparse.ArgumentParser()
 	p.add_argument("--cast_addr", default = None, help = "caster service address (publish/subscribe)")
 	p.add_argument("--ctrl_addr", default = None, help = "control service address (bidirectional)")
+	p.add_argument("--log-dir", default = None, help = "directory for agent log files")
+	p.add_argument("--telem-dir", default = None, help = "directory for local telemetry JSONL files")
 	p.add_argument("--log-file", default="", help="optional file path")
 	p.add_argument("--port", default = None, help = "optional port useful if multiple devices on a single computer")
 	p.add_argument("-v", "--verbosity", type=int, default=2, help="0=errors, 1=warn, 2=info, 3=debug")
 	return p.parse_args()
+
+def configure_runtime_dirs(log_dir: Optional[str] = None, telem_dir: Optional[str] = None) -> None:
+	"""Configure runtime log/telemetry directories before logging starts."""
+	global LOG_DIR, TELEM_DIR, _LOG_PATH, _TELEM_PATH
+
+	if log_dir:
+		LOG_DIR = log_dir
+	if telem_dir:
+		TELEM_DIR = telem_dir
+
+	os.makedirs(LOG_DIR, exist_ok=True)
+	os.makedirs(TELEM_DIR, exist_ok=True)
+	_LOG_PATH = os.path.join(LOG_DIR, f"UNKNOWN_{_START_STR}.txt")
+	_TELEM_PATH = os.path.join(TELEM_DIR, f"UNKNOWN_{_START_STR}.jsonl")
 
 """
 Set (or rename to) a telemetry filename that includes alias + start time.
@@ -1733,6 +1747,7 @@ async def main():
 	try:
 		args = parse_args()
 		_VERBOSE_TELEM = args.verbosity >= 3
+		configure_runtime_dirs(args.log_dir, args.telem_dir)
 
 
 		# Discover device and identity (optionally use provided port)

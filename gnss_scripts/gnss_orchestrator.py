@@ -638,6 +638,10 @@ def _remote_agent_launch_script(node_status: dict[str, Any]) -> tuple[str, str]:
         resolved["cast_addr"],
         "--ctrl_addr",
         resolved["ctrl_addr"],
+        "--log-dir",
+        resolved["logdir"],
+        "--telem-dir",
+        resolved["telem_dir"],
         "-v",
         resolved["verbosity"],
     ]
