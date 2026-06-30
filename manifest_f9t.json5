@@ -17,6 +17,7 @@
       { key: "CFG_SIGNAL_BDS_B1_ENA",     value: 1 },
       { key: "CFG_SIGNAL_BDS_B2_ENA",     value: 1 },
 
+      { key: "CFG_SIGNAL_GLO_ENA",        value: 0 },
       { key: "CFG_SIGNAL_SBAS_ENA",       value: 0 },
       { key: "CFG_SIGNAL_QZSS_ENA",       value: 0 },
 
@@ -44,7 +45,7 @@
       { key: "CFG_MSGOUT_UBX_NAV_DOP_USB", value: 1 },
 
       // ---- TP2: 10 MHz, 50% duty, align to TOW ----
-      { key: "CFG_TP_TP2_ENA",            value: 1 },
+      { key: "CFG_TP_TP2_ENA",            value: 0 },
       { key: "CFG_TP_FREQ_TP2",           value: 10000000 },
       { key: "CFG_TP_DUTY_TP2",           value: 50.0 },  // %
       { key: "CFG_TP_ALIGN_TO_TOW_TP2",   value: 1 },

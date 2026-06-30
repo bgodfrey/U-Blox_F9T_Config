@@ -7,7 +7,8 @@ The status command is intentionally read-only:
 
 It validates the deployment inventory and checks local/remote prerequisites.
 The start command uses the same inventory and preflight checks before launching
-the GNSS server and agents in screen sessions.
+the GNSS server and agents in screen sessions. The stop command gracefully shuts
+those sessions down again.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -53,6 +55,21 @@ class CommandResult:
 @dataclass
 class StartResult:
     """One start-action result for the server or a node."""
+
+    kind: str
+    key: str
+    daq_name: str
+    host: str
+    status: str
+    detail: str = ""
+    required: bool = False
+    command: str = ""
+    script: str = ""
+
+
+@dataclass
+class StopResult:
+    """One stop-action result for the server or a node."""
 
     kind: str
     key: str
@@ -320,6 +337,16 @@ def _screen_verify_script(screen_name: str, log_path: str) -> list[str]:
         "  exit 1",
         "fi",
     ]
+
+
+def _pgrep_safe_pattern(process_match: str) -> str:
+    """Return a pgrep regex that does not match its own shell wrapper."""
+
+    if not process_match:
+        return process_match
+    if process_match.startswith("/"):
+        return "[/]" + re.escape(process_match[1:])
+    return "[" + re.escape(process_match[0]) + "]" + re.escape(process_match[1:])
 
 
 def _all_checks_ok(item: dict[str, Any]) -> bool:
@@ -812,6 +839,263 @@ def start_gnss(
     return {"config_path": str(config_path), "dry_run": dry_run, "results": results}
 
 
+def _stop_script(screen_name: str, process_match: str, grace_sec: int, log_path: str | None) -> str:
+    """Build a Bash script that gracefully stops a screen-managed process.
+
+    The script first sends Ctrl+C to matching screen sessions so Python can run
+    its normal signal handlers. It then sends SIGTERM to any process still
+    matching the configured script path, waits up to shutdown_grace_sec, and
+    removes stale screen sessions.
+    """
+
+    screen = shlex.quote(screen_name)
+    match = shlex.quote(_pgrep_safe_pattern(process_match))
+    log = shlex.quote(log_path) if log_path else ""
+    lines = [
+        "set -euo pipefail",
+        f"SCREEN_NAME={screen}",
+        f"PROCESS_MATCH={match}",
+        f"GRACE_SEC={int(grace_sec)}",
+        "screen_sessions() {",
+        "  screen -ls 2>/dev/null | awk -v n=\"$SCREEN_NAME\" '$1 ~ (\"\\\\.\" n \"$\") {print $1}'",
+        "}",
+        "had_session=0",
+        "while read -r sid; do",
+        "  [ -n \"$sid\" ] || continue",
+        "  had_session=1",
+        "  screen -S \"$sid\" -X stuff $'\\003' >/dev/null 2>&1 || true",
+        "done < <(screen_sessions)",
+        "pkill -TERM -f -- \"$PROCESS_MATCH\" >/dev/null 2>&1 || true",
+        "for _ in $(seq 1 \"$GRACE_SEC\"); do",
+        "  if ! pgrep -f -- \"$PROCESS_MATCH\" >/dev/null 2>&1; then",
+        "    break",
+        "  fi",
+        "  sleep 1",
+        "done",
+        "while read -r sid; do",
+        "  [ -n \"$sid\" ] || continue",
+        "  screen -S \"$sid\" -X quit >/dev/null 2>&1 || true",
+        "done < <(screen_sessions)",
+        "screen -wipe >/dev/null 2>&1 || true",
+        "if screen_sessions | grep -q .; then",
+        "  echo \"[FAIL] screen $SCREEN_NAME still present after stop\"",
+    ]
+    if log_path:
+        lines.extend(
+            [
+                f"  echo '[INFO] log: {log_path}'",
+                f"  tail -n 60 {log} 2>/dev/null || true",
+            ]
+        )
+    lines.extend(
+        [
+            "  exit 1",
+            "fi",
+            "if pgrep -f -- \"$PROCESS_MATCH\" >/dev/null 2>&1; then",
+            f"  echo '[FAIL] process still running: {process_match}'",
+        ]
+    )
+    if log_path:
+        lines.extend(
+            [
+                f"  echo '[INFO] log: {log_path}'",
+                f"  tail -n 60 {log} 2>/dev/null || true",
+            ]
+        )
+    lines.extend(
+        [
+            "  exit 1",
+            "fi",
+            "if [ \"$had_session\" -eq 1 ]; then",
+            "  echo \"[OK] stopped $SCREEN_NAME\"",
+            "else",
+            "  echo \"[OK] $SCREEN_NAME was not running\"",
+            "fi",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _server_stop_script(server_status: dict[str, Any]) -> tuple[str, str]:
+    """Build the local Bash script that stops the GNSS server."""
+
+    server = server_status["config"]
+    resolved = server_status["resolved"]
+    screen = str(server.get("screen") or server.get("server_screen") or "gnss_server")
+    log_path = str(Path(str(resolved["logdir"])) / f"{screen}.log")
+    grace_sec = int(server.get("shutdown_grace_sec", 5))
+    return _stop_script(screen, str(resolved["script"]), grace_sec, log_path), log_path
+
+
+def _stop_server(config: dict[str, Any], *, dry_run: bool) -> StopResult:
+    """Stop the local GNSS server, or describe the command in dry-run mode."""
+
+    server_status = _server_status(config)
+    defaults = config.get("defaults", {})
+    server = _merge(defaults, config.get("server", {}))
+    if "screen" not in server and "server_screen" in server:
+        server["screen"] = server["server_screen"]
+    server_status["config"] = server
+    script, log_path = _server_stop_script(server_status)
+    command = "bash -c " + shlex.quote(script)
+
+    if dry_run:
+        return StopResult(
+            kind="server",
+            key="server",
+            daq_name=str(server_status["daq_name"]),
+            host=str(server_status["host"]),
+            status="dry-run",
+            detail=f"would stop screen {server.get('screen')} and process {server_status['resolved']['script']}",
+            required=True,
+            command=command,
+            script=script,
+        )
+
+    result = _run_bash(script, timeout=float(server.get("shutdown_grace_sec", 5)) + 10.0)
+    ok = result.returncode == 0
+    return StopResult(
+        kind="server",
+        key="server",
+        daq_name=str(server_status["daq_name"]),
+        host=str(server_status["host"]),
+        status="stopped" if ok else "failed",
+        detail=f"log {log_path}" if ok else _format_cmd_result(result),
+        required=True,
+        command=command,
+        script=script,
+    )
+
+
+def _node_stop_status(key: str, raw_node: dict[str, Any], defaults: dict[str, Any]) -> dict[str, Any]:
+    """Resolve the node fields needed for stop without running full preflight."""
+
+    node = _merge(defaults, raw_node)
+    repo = str(node.get("repo", ""))
+    agent_script = _resolve_under_repo(repo, str(node.get("agent_script", "agent_v1.py"))) if repo else ""
+    logdir = _resolve_under_repo(repo, str(node.get("logdir", "logging"))) if repo else ""
+    return {
+        "kind": "node",
+        "key": key,
+        "daq_name": node.get("daq_name", key),
+        "host": node.get("host", key),
+        "required": _str_bool(node.get("required", False)),
+        "resolved": {
+            "agent_script": agent_script,
+            "logdir": logdir,
+        },
+        "config": node,
+    }
+
+
+def _remote_agent_stop_script(node_status: dict[str, Any]) -> tuple[str, str]:
+    """Build the remote Bash script that stops one GNSS agent."""
+
+    node = node_status["config"]
+    resolved = node_status["resolved"]
+    screen = str(node.get("agent_screen", "gnss_agent"))
+    log_path = str(Path(str(resolved["logdir"])) / f"{screen}.log")
+    grace_sec = int(node.get("shutdown_grace_sec", 5))
+    return _stop_script(screen, str(resolved["agent_script"]), grace_sec, log_path), log_path
+
+
+def _stop_node(
+    key: str,
+    raw_node: dict[str, Any],
+    defaults: dict[str, Any],
+    *,
+    dry_run: bool,
+) -> StopResult:
+    """Stop one remote GNSS agent, or describe the action in dry-run mode."""
+
+    node_status = _node_stop_status(key, raw_node, defaults)
+    node = node_status["config"]
+    script, log_path = _remote_agent_stop_script(node_status)
+    command = _shell_join(_ssh_base(node) + ["bash -c " + shlex.quote(script)])
+    required = _str_bool(node.get("required", False))
+
+    if dry_run:
+        return StopResult(
+            kind="node",
+            key=key,
+            daq_name=str(node_status["daq_name"]),
+            host=str(node_status["host"]),
+            status="dry-run",
+            detail=f"would stop screen {node.get('agent_screen')} and process {node_status['resolved']['agent_script']}",
+            required=required,
+            command=command,
+            script=script,
+        )
+
+    ssh_result = _remote_run(node, "true")
+    if ssh_result.returncode != 0:
+        return StopResult(
+            kind="node",
+            key=key,
+            daq_name=str(node_status["daq_name"]),
+            host=str(node_status["host"]),
+            status="failed",
+            detail="ssh unreachable: " + _format_cmd_result(ssh_result),
+            required=required,
+            command=command,
+            script=script,
+        )
+
+    result = _remote_run(node, script, timeout=float(node.get("shutdown_grace_sec", 5)) + 10.0)
+    ok = result.returncode == 0
+    return StopResult(
+        kind="node",
+        key=key,
+        daq_name=str(node_status["daq_name"]),
+        host=str(node_status["host"]),
+        status="stopped" if ok else "failed",
+        detail=f"log {log_path}" if ok else _format_cmd_result(result),
+        required=required,
+        command=command,
+        script=script,
+    )
+
+
+def stop_gnss(
+    config_path: str | os.PathLike[str] = DEFAULT_CONFIG,
+    *,
+    nodes: list[str] | None = None,
+    dry_run: bool = False,
+    include_disabled: bool = False,
+    server_only: bool = False,
+    agents_only: bool = False,
+) -> dict[str, Any]:
+    """Stop GNSS agents and, when appropriate, the local GNSS server.
+
+    By default, stopping the full deployment stops all selected agents first and
+    then stops the local server. If one or more --node filters are supplied, the
+    default is intentionally narrower: only those agents are stopped, so a
+    single-node maintenance action does not accidentally take down the server.
+    """
+
+    config = load_config(config_path)
+    defaults = config.get("defaults", {})
+    results: list[StopResult] = []
+
+    stop_agents = not server_only
+    stop_server = server_only or (not agents_only and not nodes)
+
+    if stop_agents:
+        for key, raw_node in _selected_node_items(config, nodes, include_disabled=include_disabled):
+            results.append(_stop_node(key, raw_node, defaults, dry_run=dry_run))
+
+    if stop_server:
+        results.append(_stop_server(config, dry_run=dry_run))
+
+    return {
+        "config_path": str(config_path),
+        "dry_run": dry_run,
+        "server_only": server_only,
+        "agents_only": agents_only,
+        "results": results,
+    }
+
+
 def _check_status(checks: list[Check]) -> str:
     """Collapse a list of checks into a human-readable overall state.
 
@@ -864,18 +1148,40 @@ def _print_start(report: dict[str, Any]) -> None:
         print()
 
 
+def _print_stop(report: dict[str, Any]) -> None:
+    """Print a stop report in a compact human-readable format."""
+
+    mode = "dry-run" if report.get("dry_run") else "stop"
+    print(f"Config: {report['config_path']}")
+    print(f"Mode:   {mode}")
+    print()
+    for item in report["results"]:
+        print(f"{item.status:8} {item.kind:6} {item.key:12} {item.daq_name:18} host={item.host}")
+        if item.detail:
+            print(f"  detail: {item.detail}")
+        if report.get("dry_run") and item.script:
+            if item.kind == "node":
+                print(f"  target: ssh {item.host}")
+                print("  remote script:")
+            else:
+                print("  local script:")
+            for line in item.script.splitlines():
+                print(f"    {line}")
+        print()
+
+
 def _jsonable(report: dict[str, Any]) -> dict[str, Any]:
     """Convert dataclass values to plain dicts for JSON output.
 
-    Status reports contain Check dataclass instances. Start reports contain
-    StartResult dataclass instances. json.dumps cannot serialize those directly,
-    so this creates an equivalent plain-Python object.
+    Status reports contain Check dataclass instances. Start/stop reports contain
+    action dataclass instances. json.dumps cannot serialize those directly, so
+    this creates an equivalent plain-Python object.
     """
 
     out = {k: v for k, v in report.items() if k != "results"}
     out["results"] = []
     for item in report["results"]:
-        if isinstance(item, StartResult):
+        if isinstance(item, (StartResult, StopResult)):
             copied = item.__dict__
         else:
             copied = dict(item)
@@ -911,6 +1217,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     start.add_argument("--include-disabled", action="store_true", help="include disabled nodes")
     start.add_argument("--dry-run", action="store_true", help="show launch commands without running them")
     start.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+
+    stop = sub.add_parser("stop", help="stop selected GNSS agents and optionally the server")
+    stop.add_argument("--node", action="append", default=[], help="limit stop to a node key, host, or DAQ name")
+    stop.add_argument("--include-disabled", action="store_true", help="include disabled nodes")
+    stop.add_argument("--server-only", action="store_true", help="stop only the local GNSS server")
+    stop.add_argument("--agents-only", action="store_true", help="stop agents without stopping the local GNSS server")
+    stop.add_argument("--dry-run", action="store_true", help="show stop commands without running them")
+    stop.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     return parser.parse_args(argv)
 
 
@@ -955,6 +1269,31 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(_jsonable(report), indent=2, sort_keys=True))
         else:
             _print_start(report)
+
+        failed_required = False
+        for item in report["results"]:
+            if item.kind == "server" or item.required:
+                failed_required = failed_required or item.status == "failed"
+        return 1 if failed_required else 0
+
+    if args.command == "stop":
+        if args.server_only and args.agents_only:
+            raise SystemExit("--server-only and --agents-only cannot be used together")
+        if args.server_only and args.node:
+            raise SystemExit("--node cannot be used with --server-only")
+
+        report = stop_gnss(
+            args.config,
+            nodes=args.node,
+            dry_run=args.dry_run,
+            include_disabled=args.include_disabled,
+            server_only=args.server_only,
+            agents_only=args.agents_only,
+        )
+        if args.json:
+            print(json.dumps(_jsonable(report), indent=2, sort_keys=True))
+        else:
+            _print_stop(report)
 
         failed_required = False
         for item in report["results"]:
