@@ -201,26 +201,81 @@ def _remote_run(node: dict[str, Any], script: str, timeout: float | None = None)
     return _run(_ssh_base(node) + ["bash -c " + shlex.quote(script)], timeout=timeout)
 
 
-def _remote_test(
-    node: dict[str, Any],
-    test_arg: str,
-    path: str,
-    timeout: float | None = None,
-    label: str | None = None,
-) -> Check:
-    """Run a remote POSIX file test and return it as a status Check.
+def _remote_preflight_script(paths: dict[str, str]) -> str:
+    """Build one remote Bash script for all node preflight checks."""
 
-    Examples:
-        _remote_test(node, "-x", "/path/to/python") checks executability.
-        _remote_test(node, "-d", "/path/to/repo") checks directory existence.
-        _remote_test(node, "-d", "/path", label="remote logdir parent exists")
-        gives an otherwise generic check a clearer report name.
-    """
+    checks = [
+        ("remote -x " + paths["python"], "-x", paths["python"], paths["python"]),
+        ("remote -d " + paths["repo"], "-d", paths["repo"], paths["repo"]),
+        ("remote -f " + paths["agent_script"], "-f", paths["agent_script"], paths["agent_script"]),
+        ("remote -x " + paths["find_ublox_script"], "-x", paths["find_ublox_script"], paths["find_ublox_script"]),
+        ("remote logdir parent exists", "-d", os.path.dirname(paths["logdir"]), os.path.dirname(paths["logdir"])),
+        ("remote telem_dir parent exists", "-d", os.path.dirname(paths["telem_dir"]), os.path.dirname(paths["telem_dir"])),
+    ]
 
-    result = _remote_run(node, f"test {test_arg} {shlex.quote(path)}", timeout=timeout)
-    check_name = label or f"remote {test_arg} {path}"
-    detail = path if label and result.returncode == 0 else _format_cmd_result(result)
-    return Check(check_name, result.returncode == 0, detail)
+    lines = [
+        "emit_check() {",
+        "  label=$1",
+        "  test_arg=$2",
+        "  path=$3",
+        "  detail=$4",
+        "  if test \"$test_arg\" \"$path\"; then",
+        "    printf 'CHECK\\tOK\\t%s\\t%s\\n' \"$label\" \"$detail\"",
+        "  else",
+        "    printf 'CHECK\\tFAIL\\t%s\\t%s\\n' \"$label\" \"$detail\"",
+        "  fi",
+        "}",
+    ]
+    for label, test_arg, path, detail in checks:
+        lines.append(
+            "emit_check "
+            + " ".join(shlex.quote(value) for value in [label, test_arg, path, detail])
+        )
+
+    find_ublox = shlex.quote(paths["find_ublox_script"])
+    lines.extend(
+        [
+            "gnss_output=$(" + find_ublox + " 2>&1)",
+            "gnss_rc=$?",
+            "gnss_output=${gnss_output//$'\\n'/; }",
+            "if [ \"$gnss_rc\" -eq 0 ]; then",
+            "  printf 'GNSS\\tOK\\t%s\\n' \"$gnss_output\"",
+            "else",
+            "  printf 'GNSS\\tFAIL\\texit %s: %s\\n' \"$gnss_rc\" \"$gnss_output\"",
+            "fi",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _parse_remote_preflight(result: CommandResult) -> tuple[list[Check], bool | None]:
+    """Parse remote preflight output into checks and GNSS detection state."""
+
+    checks: list[Check] = []
+    gnss_detected: bool | None = None
+    if result.returncode != 0:
+        checks.append(Check("remote preflight", False, _format_cmd_result(result)))
+        return checks, gnss_detected
+
+    for line in result.stdout.splitlines():
+        parts = line.split("\t", 3)
+        if len(parts) < 3:
+            checks.append(Check("remote preflight output", False, line))
+            continue
+        kind = parts[0]
+        status = parts[1]
+        if kind == "CHECK":
+            label = parts[2]
+            detail = parts[3] if len(parts) > 3 else ""
+            checks.append(Check(label, status == "OK", detail))
+        elif kind == "GNSS":
+            detail = parts[2]
+            gnss_detected = status == "OK"
+            checks.append(Check("gnss receiver detected", gnss_detected, detail))
+        else:
+            checks.append(Check("remote preflight output", False, line))
+
+    return checks, gnss_detected
 
 
 def _format_cmd_result(result: CommandResult) -> str:
@@ -416,27 +471,19 @@ def _node_status(
         checks[-1] = Check("ssh reachable", ssh_result.returncode == 0, _format_cmd_result(ssh_result))
 
         if ssh_result.returncode == 0:
-            # Check the remote files/directories that a later `start` command
-            # will rely on. Parent-directory checks allow log/telem directories
-            # to be created by the startup path later.
-            checks.append(_remote_test(node, "-x", str(node["python"])))
-            checks.append(_remote_test(node, "-d", repo))
-            checks.append(_remote_test(node, "-f", agent_script))
-            checks.append(_remote_test(node, "-x", find_ublox))
-            checks.append(
-                _remote_test(node, "-d", os.path.dirname(logdir), label="remote logdir parent exists")
+            preflight_script = _remote_preflight_script(
+                {
+                    "python": str(node["python"]),
+                    "repo": repo,
+                    "agent_script": agent_script,
+                    "find_ublox_script": find_ublox,
+                    "logdir": logdir,
+                    "telem_dir": telem_dir,
+                }
             )
-            checks.append(
-                _remote_test(node, "-d", os.path.dirname(telem_dir), label="remote telem_dir parent exists")
-            )
-
-            # Receiver detection uses the same helper script that the shell
-            # startup path used. Exit code 0 means at least one u-blox device was
-            # found; nonzero means no receiver or an execution problem.
-            find_result = _remote_run(node, shlex.quote(find_ublox), timeout=15.0)
-            gnss_detected = find_result.returncode == 0
-            detail = find_result.stdout if gnss_detected else _format_cmd_result(find_result)
-            checks.append(Check("gnss receiver detected", gnss_detected, detail))
+            preflight_result = _remote_run(node, preflight_script, timeout=20.0)
+            remote_checks, gnss_detected = _parse_remote_preflight(preflight_result)
+            checks.extend(remote_checks)
 
     return {
         "kind": "node",
