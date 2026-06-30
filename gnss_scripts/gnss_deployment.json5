@@ -67,8 +67,8 @@
       "repo": "/home/panoseti/U-Blox_F9T_Config",
       "agent_script": "agent_v1.py",
       "find_ublox_script": "/home/panoseti/U-Blox_F9T_Config/gnss_scripts/find_ublox.sh",
-      "logdir": "gnss_logging",
-      "telem_dir": "gnss_telem",
+      "logdir": "/home/panoseti/gnss_logging",
+      "telem_dir": "/home/panoseti/gnss_telem",
       "cast_addr": "10.200.146.1:50051",
       "ctrl_addr": "10.200.146.1:50051",
       "verbosity": 3
@@ -84,8 +84,8 @@
       "repo": "/home/panoseti/Codebase/U-Blox_F9T_Config",
       "agent_script": "agent_v1.py",
       "find_ublox_script": "/home/panoseti/Codebase/U-Blox_F9T_Config/gnss_scripts/find_ublox.sh",
-      "logdir": "gnss_logging",
-      "telem_dir": "gnss_telem",
+      "logdir": "/home/panoseti/gnss_logging",
+      "telem_dir": "/home/panoseti/gnss_telem",
       "cast_addr": "10.200.146.1:50051",
       "ctrl_addr": "10.200.146.1:50051",
       "verbosity": 3
@@ -101,8 +101,8 @@
       "repo": "/home/panoseti/Codebase/U-Blox_F9T_Config",
       "agent_script": "agent_v1.py",
       "find_ublox_script": "/home/panoseti/Codebase/U-Blox_F9T_Config/gnss_scripts/find_ublox.sh",
-      "logdir": "gnss_logging",
-      "telem_dir": "gnss_telem",
+      "logdir": "/home/panoseti/gnss_logging",
+      "telem_dir": "/home/panoseti/gnss_telem",
       "cast_addr": "10.200.146.1:50051",
       "ctrl_addr": "10.200.146.1:50051",
       "verbosity": 3
@@ -118,8 +118,8 @@
       "repo": "/home/panoseti/U-Blox_F9T_Config",
       "agent_script": "agent_v1.py",
       "find_ublox_script": "/home/panoseti/U-Blox_F9T_Config/gnss_scripts/find_ublox.sh",
-      "logdir": "gnss_logging",
-      "telem_dir": "gnss_telem",
+      "logdir": "/home/panoseti/gnss_logging",
+      "telem_dir": "/home/panoseti/gnss_telem",
       "cast_addr": "10.200.146.1:50051",
       "ctrl_addr": "10.200.146.1:50051",
       "verbosity": 3
