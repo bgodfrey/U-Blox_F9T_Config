@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """GNSS deployment orchestration.
 
-The first implemented command is intentionally read-only:
+The status command is intentionally read-only:
 
     python gnss_scripts/gnss_orchestrator.py status
 
-It validates the deployment inventory and checks local/remote prerequisites
-without starting or stopping GNSS processes.
+It validates the deployment inventory and checks local/remote prerequisites.
+The start command uses the same inventory and preflight checks before launching
+the GNSS server and agents in screen sessions.
 """
 
 from __future__ import annotations
@@ -16,7 +17,6 @@ import json
 import os
 import shlex
 import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -48,6 +48,20 @@ class CommandResult:
     returncode: int
     stdout: str
     stderr: str
+
+
+@dataclass
+class StartResult:
+    """One start-action result for the server or a node."""
+
+    kind: str
+    key: str
+    daq_name: str
+    host: str
+    status: str
+    detail: str = ""
+    required: bool = False
+    command: str = ""
 
 
 def load_config(path: str | os.PathLike[str] = DEFAULT_CONFIG) -> dict[str, Any]:
@@ -135,6 +149,16 @@ def _run(args: list[str], timeout: float) -> CommandResult:
         return CommandResult(127, "", str(exc))
 
 
+def _run_bash(script: str, timeout: float) -> CommandResult:
+    """Run a local Bash script through bash -lc.
+
+    This is used for local screen orchestration, where shell features like
+    redirection are the clearest way to express the launch command.
+    """
+
+    return _run(["bash", "-lc", script], timeout=timeout)
+
+
 def _ssh_base(node: dict[str, Any]) -> list[str]:
     """Build the common SSH command prefix for a configured node.
 
@@ -215,6 +239,24 @@ def _format_cmd_result(result: CommandResult) -> str:
     return ": ".join(parts)
 
 
+def _shell_join(args: list[Any]) -> str:
+    """Shell-quote and join command arguments."""
+
+    return " ".join(shlex.quote(str(arg)) for arg in args)
+
+
+def _screen_grep_pattern(screen_name: str) -> str:
+    """Return a screen -ls grep pattern for an exact screen session name."""
+
+    return rf"\.{screen_name}[[:space:]]"
+
+
+def _all_checks_ok(item: dict[str, Any]) -> bool:
+    """Return true when every Check in a status item passed."""
+
+    return all(check.ok for check in item.get("checks", []))
+
+
 def _check_required_fields(name: str, item: dict[str, Any], fields: list[str]) -> list[Check]:
     """Check that a config object has non-empty values for required fields.
 
@@ -247,6 +289,8 @@ def _server_status(config: dict[str, Any]) -> dict[str, Any]:
 
     defaults = config.get("defaults", {})
     server = _merge(defaults, config.get("server", {}))
+    if "screen" not in server and "server_screen" in server:
+        server["screen"] = server["server_screen"]
 
     # Server script/logdir paths may be absolute, but the usual case is that
     # they are stored relative to the server repo.
@@ -443,6 +487,255 @@ def status_gnss(
     return {"config_path": str(config_path), "results": results}
 
 
+def _selected_node_items(
+    config: dict[str, Any],
+    nodes: list[str] | None,
+    include_disabled: bool = False,
+) -> list[tuple[str, dict[str, Any]]]:
+    """Return configured node entries matching optional user filters.
+
+    Filters may match the inventory key, SSH host, or DAQ/display name. This is
+    shared by status/start so the CLI behaves consistently.
+    """
+
+    defaults = config.get("defaults", {})
+    selected = set(nodes or [])
+    out: list[tuple[str, dict[str, Any]]] = []
+    for key, raw_node in config.get("nodes", {}).items():
+        if selected and key not in selected and raw_node.get("host") not in selected and raw_node.get("daq_name") not in selected:
+            continue
+        node = _merge(defaults, raw_node)
+        if not _str_bool(node.get("enabled", True)) and not include_disabled:
+            continue
+        out.append((key, raw_node))
+    return out
+
+
+def _server_launch_script(server_status: dict[str, Any]) -> tuple[str, str]:
+    """Build the local Bash script that starts the GNSS server in screen.
+
+    Returns:
+        A tuple of (script, log_path). The script is suitable for bash -lc.
+    """
+
+    server = server_status["config"]
+    resolved = server_status["resolved"]
+    screen = str(server.get("screen") or server.get("server_screen") or "gnss_server")
+    logdir = str(resolved["logdir"])
+    log_path = str(Path(logdir) / f"{screen}.log")
+
+    server_args = [
+        server["python"],
+        "-u",
+        resolved["script"],
+        "--ip",
+        server.get("bind_addr", "0.0.0.0:50051"),
+        "-v",
+        server.get("verbosity", 2),
+    ]
+    if server.get("receiver_manifest"):
+        server_args.extend(["--config", server["receiver_manifest"]])
+
+    inner = f"exec {_shell_join(server_args)} >> {shlex.quote(log_path)} 2>&1"
+    script = "\n".join(
+        [
+            "set -euo pipefail",
+            f"mkdir -p {shlex.quote(logdir)}",
+            f"screen -S {shlex.quote(screen)} -X quit >/dev/null 2>&1 || true",
+            "sleep 0.5",
+            f"screen -dmS {shlex.quote(screen)} bash -lc {shlex.quote(inner)}",
+            "sleep 1",
+            f"screen -ls | grep -q -- {shlex.quote(_screen_grep_pattern(screen))}",
+        ]
+    )
+    return script, log_path
+
+
+def _start_server(config: dict[str, Any], *, dry_run: bool) -> StartResult:
+    """Start the local GNSS server, or describe the command in dry-run mode."""
+
+    server_status = _server_status(config)
+    defaults = config.get("defaults", {})
+    server = _merge(defaults, config.get("server", {}))
+    server_status["config"] = server
+    script, log_path = _server_launch_script(server_status)
+    command = "bash -lc " + shlex.quote(script)
+
+    if not _all_checks_ok(server_status):
+        return StartResult(
+            kind="server",
+            key="server",
+            daq_name=str(server_status["daq_name"]),
+            host=str(server_status["host"]),
+            status="failed",
+            detail="server preflight failed",
+            required=True,
+            command=command,
+        )
+
+    if dry_run:
+        return StartResult(
+            kind="server",
+            key="server",
+            daq_name=str(server_status["daq_name"]),
+            host=str(server_status["host"]),
+            status="dry-run",
+            detail=f"would start screen {server.get('screen')} with log {log_path}",
+            required=True,
+            command=command,
+        )
+
+    result = _run_bash(script, timeout=15.0)
+    ok = result.returncode == 0
+    return StartResult(
+        kind="server",
+        key="server",
+        daq_name=str(server_status["daq_name"]),
+        host=str(server_status["host"]),
+        status="started" if ok else "failed",
+        detail=f"log {log_path}" if ok else _format_cmd_result(result),
+        required=True,
+        command=command,
+    )
+
+
+def _remote_agent_launch_script(node_status: dict[str, Any]) -> tuple[str, str]:
+    """Build the remote Bash script that starts one GNSS agent in screen."""
+
+    node = node_status["config"]
+    resolved = node_status["resolved"]
+    screen = str(node.get("agent_screen", "gnss_agent"))
+    logdir = str(resolved["logdir"])
+    telem_dir = str(resolved["telem_dir"])
+    log_path = str(Path(logdir) / f"{screen}.log")
+
+    agent_args = [
+        node["python"],
+        "-u",
+        resolved["agent_script"],
+        "--cast_addr",
+        resolved["cast_addr"],
+        "--ctrl_addr",
+        resolved["ctrl_addr"],
+        "-v",
+        resolved["verbosity"],
+    ]
+    inner = f"exec {_shell_join(agent_args)} >> {shlex.quote(log_path)} 2>&1"
+    script = "\n".join(
+        [
+            "set -euo pipefail",
+            f"mkdir -p {shlex.quote(logdir)} {shlex.quote(telem_dir)}",
+            f"screen -S {shlex.quote(screen)} -X quit >/dev/null 2>&1 || true",
+            "sleep 0.5",
+            f"cd {shlex.quote(resolved['repo'])}",
+            f"screen -dmS {shlex.quote(screen)} bash -lc {shlex.quote(inner)}",
+            "sleep 1",
+            f"screen -ls | grep -q -- {shlex.quote(_screen_grep_pattern(screen))}",
+        ]
+    )
+    return script, log_path
+
+
+def _start_node(
+    key: str,
+    raw_node: dict[str, Any],
+    defaults: dict[str, Any],
+    *,
+    dry_run: bool,
+) -> StartResult:
+    """Start one remote GNSS agent, or describe the action in dry-run mode."""
+
+    node_status = _node_status(key, raw_node, defaults, local_only=False)
+    node = _merge(defaults, raw_node)
+    node_status["config"] = node
+    script, log_path = _remote_agent_launch_script(node_status)
+    command = _shell_join(_ssh_base(node) + ["bash -lc " + shlex.quote(script)])
+    required = _str_bool(node.get("required", False))
+    start_only_if_receiver_detected = _str_bool(node.get("start_only_if_receiver_detected", True))
+
+    if start_only_if_receiver_detected and node_status.get("gnss_detected") is False:
+        return StartResult(
+            kind="node",
+            key=key,
+            daq_name=str(node_status["daq_name"]),
+            host=str(node_status["host"]),
+            status="skipped",
+            detail="GNSS receiver not detected",
+            required=required,
+            command=command,
+        )
+
+    if not _all_checks_ok(node_status):
+        return StartResult(
+            kind="node",
+            key=key,
+            daq_name=str(node_status["daq_name"]),
+            host=str(node_status["host"]),
+            status="failed",
+            detail="node preflight failed",
+            required=required,
+            command=command,
+        )
+
+    if dry_run:
+        return StartResult(
+            kind="node",
+            key=key,
+            daq_name=str(node_status["daq_name"]),
+            host=str(node_status["host"]),
+            status="dry-run",
+            detail=f"would start screen {node.get('agent_screen')} with log {log_path}",
+            required=required,
+            command=command,
+        )
+
+    result = _remote_run(node, script, timeout=20.0)
+    ok = result.returncode == 0
+    return StartResult(
+        kind="node",
+        key=key,
+        daq_name=str(node_status["daq_name"]),
+        host=str(node_status["host"]),
+        status="started" if ok else "failed",
+        detail=f"log {log_path}" if ok else _format_cmd_result(result),
+        required=required,
+        command=command,
+    )
+
+
+def start_gnss(
+    config_path: str | os.PathLike[str] = DEFAULT_CONFIG,
+    *,
+    nodes: list[str] | None = None,
+    dry_run: bool = False,
+    include_disabled: bool = False,
+) -> dict[str, Any]:
+    """Start the GNSS server and configured remote agents.
+
+    Args:
+        config_path: Deployment inventory path.
+        nodes: Optional list of node keys, hostnames, or DAQ names to start.
+        dry_run: If true, report launch commands without executing them.
+        include_disabled: Include disabled nodes when selecting targets.
+
+    Returns:
+        A structured start report with one StartResult for the server and one
+        for each selected node.
+    """
+
+    config = load_config(config_path)
+    defaults = config.get("defaults", {})
+    results = [_start_server(config, dry_run=dry_run)]
+
+    if results[0].status == "failed":
+        return {"config_path": str(config_path), "dry_run": dry_run, "results": results}
+
+    for key, raw_node in _selected_node_items(config, nodes, include_disabled=include_disabled):
+        results.append(_start_node(key, raw_node, defaults, dry_run=dry_run))
+
+    return {"config_path": str(config_path), "dry_run": dry_run, "results": results}
+
+
 def _check_status(checks: list[Check]) -> str:
     """Collapse a list of checks into a human-readable overall state.
 
@@ -473,17 +766,38 @@ def _print_status(report: dict[str, Any]) -> None:
         print()
 
 
-def _jsonable(report: dict[str, Any]) -> dict[str, Any]:
-    """Convert dataclass checks to plain dicts for JSON output.
+def _print_start(report: dict[str, Any]) -> None:
+    """Print a start report in a compact human-readable format."""
 
-    The internal report contains Check dataclass instances. json.dumps cannot
-    serialize those directly, so this creates an equivalent plain-Python object.
+    mode = "dry-run" if report.get("dry_run") else "start"
+    print(f"Config: {report['config_path']}")
+    print(f"Mode:   {mode}")
+    print()
+    for item in report["results"]:
+        print(f"{item.status:8} {item.kind:6} {item.key:12} {item.daq_name:18} host={item.host}")
+        if item.detail:
+            print(f"  detail: {item.detail}")
+        if report.get("dry_run") and item.command:
+            print(f"  command: {item.command}")
+        print()
+
+
+def _jsonable(report: dict[str, Any]) -> dict[str, Any]:
+    """Convert dataclass values to plain dicts for JSON output.
+
+    Status reports contain Check dataclass instances. Start reports contain
+    StartResult dataclass instances. json.dumps cannot serialize those directly,
+    so this creates an equivalent plain-Python object.
     """
 
-    out = {"config_path": report["config_path"], "results": []}
+    out = {k: v for k, v in report.items() if k != "results"}
+    out["results"] = []
     for item in report["results"]:
-        copied = dict(item)
-        copied["checks"] = [check.__dict__ for check in item["checks"]]
+        if isinstance(item, StartResult):
+            copied = item.__dict__
+        else:
+            copied = dict(item)
+            copied["checks"] = [check.__dict__ for check in item["checks"]]
         out["results"].append(copied)
     return out
 
@@ -509,6 +823,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     status.add_argument("--include-disabled", action="store_true", help="include disabled nodes")
     status.add_argument("--local-only", action="store_true", help="skip SSH and remote checks")
     status.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+
+    start = sub.add_parser("start", help="start the GNSS server and selected agents")
+    start.add_argument("--node", action="append", default=[], help="limit start to a node key, host, or DAQ name")
+    start.add_argument("--include-disabled", action="store_true", help="include disabled nodes")
+    start.add_argument("--dry-run", action="store_true", help="show launch commands without running them")
+    start.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     return parser.parse_args(argv)
 
 
@@ -540,6 +860,24 @@ def main(argv: list[str] | None = None) -> int:
         for item in report["results"]:
             if item["kind"] == "server" or item.get("required"):
                 failed_required = failed_required or not all(check.ok for check in item["checks"])
+        return 1 if failed_required else 0
+
+    if args.command == "start":
+        report = start_gnss(
+            args.config,
+            nodes=args.node,
+            dry_run=args.dry_run,
+            include_disabled=args.include_disabled,
+        )
+        if args.json:
+            print(json.dumps(_jsonable(report), indent=2, sort_keys=True))
+        else:
+            _print_start(report)
+
+        failed_required = False
+        for item in report["results"]:
+            if item.kind == "server" or item.required:
+                failed_required = failed_required or item.status == "failed"
         return 1 if failed_required else 0
 
     raise AssertionError(f"unhandled command {args.command!r}")
