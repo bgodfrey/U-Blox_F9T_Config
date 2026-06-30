@@ -176,16 +176,26 @@ def _remote_run(node: dict[str, Any], script: str, timeout: float | None = None)
     return _run(_ssh_base(node) + ["bash -lc " + shlex.quote(script)], timeout=timeout)
 
 
-def _remote_test(node: dict[str, Any], test_arg: str, path: str, timeout: float | None = None) -> Check:
+def _remote_test(
+    node: dict[str, Any],
+    test_arg: str,
+    path: str,
+    timeout: float | None = None,
+    label: str | None = None,
+) -> Check:
     """Run a remote POSIX file test and return it as a status Check.
 
     Examples:
         _remote_test(node, "-x", "/path/to/python") checks executability.
         _remote_test(node, "-d", "/path/to/repo") checks directory existence.
+        _remote_test(node, "-d", "/path", label="remote logdir parent exists")
+        gives an otherwise generic check a clearer report name.
     """
 
     result = _remote_run(node, f"test {test_arg} {shlex.quote(path)}", timeout=timeout)
-    return Check(f"remote {test_arg} {path}", result.returncode == 0, _format_cmd_result(result))
+    check_name = label or f"remote {test_arg} {path}"
+    detail = path if label and result.returncode == 0 else _format_cmd_result(result)
+    return Check(check_name, result.returncode == 0, detail)
 
 
 def _format_cmd_result(result: CommandResult) -> str:
@@ -353,8 +363,12 @@ def _node_status(
             checks.append(_remote_test(node, "-d", repo))
             checks.append(_remote_test(node, "-f", agent_script))
             checks.append(_remote_test(node, "-x", find_ublox))
-            checks.append(_remote_test(node, "-d", os.path.dirname(logdir)))
-            checks.append(_remote_test(node, "-d", os.path.dirname(telem_dir)))
+            checks.append(
+                _remote_test(node, "-d", os.path.dirname(logdir), label="remote logdir parent exists")
+            )
+            checks.append(
+                _remote_test(node, "-d", os.path.dirname(telem_dir), label="remote telem_dir parent exists")
+            )
 
             # Receiver detection uses the same helper script that the shell
             # startup path used. Exit code 0 means at least one u-blox device was
