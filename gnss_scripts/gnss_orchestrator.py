@@ -892,7 +892,7 @@ def _stop_script(screen_name: str, process_match: str, grace_sec: int, log_path:
             "  exit 1",
             "fi",
             "if pgrep -f -- \"$PROCESS_MATCH\" >/dev/null 2>&1; then",
-            f"  echo '[FAIL] process still running: {process_match}'",
+            "  echo '[FAIL] process still running after stop'",
         ]
     )
     if log_path:
