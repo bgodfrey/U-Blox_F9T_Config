@@ -62,6 +62,7 @@ class StartResult:
     detail: str = ""
     required: bool = False
     command: str = ""
+    script: str = ""
 
 
 def load_config(path: str | os.PathLike[str] = DEFAULT_CONFIG) -> dict[str, Any]:
@@ -557,6 +558,8 @@ def _start_server(config: dict[str, Any], *, dry_run: bool) -> StartResult:
     server_status = _server_status(config)
     defaults = config.get("defaults", {})
     server = _merge(defaults, config.get("server", {}))
+    if "screen" not in server and "server_screen" in server:
+        server["screen"] = server["server_screen"]
     server_status["config"] = server
     script, log_path = _server_launch_script(server_status)
     command = "bash -lc " + shlex.quote(script)
@@ -571,6 +574,7 @@ def _start_server(config: dict[str, Any], *, dry_run: bool) -> StartResult:
             detail="server preflight failed",
             required=True,
             command=command,
+            script=script,
         )
 
     if dry_run:
@@ -583,6 +587,7 @@ def _start_server(config: dict[str, Any], *, dry_run: bool) -> StartResult:
             detail=f"would start screen {server.get('screen')} with log {log_path}",
             required=True,
             command=command,
+            script=script,
         )
 
     result = _run_bash(script, timeout=15.0)
@@ -596,6 +601,7 @@ def _start_server(config: dict[str, Any], *, dry_run: bool) -> StartResult:
         detail=f"log {log_path}" if ok else _format_cmd_result(result),
         required=True,
         command=command,
+        script=script,
     )
 
 
@@ -663,6 +669,7 @@ def _start_node(
             detail="GNSS receiver not detected",
             required=required,
             command=command,
+            script=script,
         )
 
     if not _all_checks_ok(node_status):
@@ -675,6 +682,7 @@ def _start_node(
             detail="node preflight failed",
             required=required,
             command=command,
+            script=script,
         )
 
     if dry_run:
@@ -687,6 +695,7 @@ def _start_node(
             detail=f"would start screen {node.get('agent_screen')} with log {log_path}",
             required=required,
             command=command,
+            script=script,
         )
 
     result = _remote_run(node, script, timeout=20.0)
@@ -700,6 +709,7 @@ def _start_node(
         detail=f"log {log_path}" if ok else _format_cmd_result(result),
         required=required,
         command=command,
+        script=script,
     )
 
 
@@ -777,8 +787,14 @@ def _print_start(report: dict[str, Any]) -> None:
         print(f"{item.status:8} {item.kind:6} {item.key:12} {item.daq_name:18} host={item.host}")
         if item.detail:
             print(f"  detail: {item.detail}")
-        if report.get("dry_run") and item.command:
-            print(f"  command: {item.command}")
+        if report.get("dry_run") and item.script:
+            if item.kind == "node":
+                print(f"  target: ssh {item.host}")
+                print("  remote script:")
+            else:
+                print("  local script:")
+            for line in item.script.splitlines():
+                print(f"    {line}")
         print()
 
 
