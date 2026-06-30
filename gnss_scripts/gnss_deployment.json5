@@ -1,0 +1,128 @@
+{
+  // GNSS deployment/orchestration config.
+  //
+  // This is intentionally separate from the receiver manifest
+  // (for example, manifest_f9t.json5). The manifest describes how receivers
+  // should be configured; this file describes where DAQ nodes live and how to
+  // start/stop the GNSS agent/server processes.
+
+  "defaults": {
+    "ssh_user": "panoseti",
+    "ssh_connect_timeout_sec": 3,
+    "ssh_batch_mode": true,
+    "accept_new_host_keys": true,
+
+    "cast_addr": "10.200.146.1:50051",
+    "ctrl_addr": "10.200.146.1:50051",
+    "verbosity": 3,
+
+    "agent_screen": "gnss_agent",
+    "server_screen": "gnss_server",
+    "shutdown_grace_sec": 5,
+
+    // The orchestrator should use these relative names under each node's repo
+    // unless an individual node overrides them.
+    "agent_script": "agent_v1.py",
+    "server_script": "server_v1.py",
+    "logdir": "logging",
+    "telem_dir": "telem",
+
+    // Receiver detection script. Keep this separate because some nodes may
+    // keep gnss_scripts outside the U-Blox_F9T_Config repo.
+    "find_ublox_script": "gnss_scripts/find_ublox.sh",
+
+    // Optional policy knobs for the future Python orchestrator.
+    "start_only_if_receiver_detected": true,
+    "required": false
+  },
+
+  "server": {
+    "daq_name": "panoseti-palomar",
+    "host": "localhost",
+    "ssh_user": "obs",
+    "python": "/home/obs/miniconda3/envs/pygnss_39/bin/python",
+    "repo": "/home/obs/U-Blox_F9T_Config",
+    "script": "server_v1.py",
+    "logdir": "logging",
+    "screen": "gnss_server",
+    "bind_addr": "0.0.0.0:50051",
+    "verbosity": 3,
+
+    // Optional receiver-settings manifest passed to server_v1.py --config.
+    // Leave null to use server_v1.py's default manifest_f9t.json5.
+    "receiver_manifest": null
+  },
+
+  "nodes": {
+    // Replace these example hostnames/paths with the current four DAQ nodes.
+    // The object key should match the hostname used by SSH.
+
+    "winters": {
+      "daq_name": "WINTERS",
+      "host": "panoseti-winter",
+      "enabled": true,
+      "required": false,
+      "ssh_user": "panoseti",
+      "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
+      "repo": "/home/panoseti/U-Blox_F9T_Config",
+      "agent_script": "agent_v1.py",
+      "find_ublox_script": "/home/panoseti/U-Blox_F9T_Config/gnss_scripts/find_ublox.sh",
+      "logdir": "gnss_logging",
+      "telem_dir": "gnss_telem",
+      "cast_addr": "10.200.146.1:50051",
+      "ctrl_addr": "10.200.146.1:50051",
+      "verbosity": 3
+    },
+
+    "pti": {
+      "daq_name": "PTI",
+      "host": "panoseti-pti",
+      "enabled": true,
+      "required": false,
+      "ssh_user": "panoseti",
+      "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
+      "repo": "/home/panoseti/Codebase/U-Blox_F9T_Config",
+      "agent_script": "agent_v1.py",
+      "find_ublox_script": "/home/panoseti/Codebase/U-Blox_F9T_Config/gnss_scripts/find_ublox.sh",
+      "logdir": "gnss_logging",
+      "telem_dir": "gnss_telem",
+      "cast_addr": "10.200.146.1:50051",
+      "ctrl_addr": "10.200.146.1:50051",
+      "verbosity": 3
+    },
+
+    "fern": {
+      "daq_name": "FERN",
+      "host": "panoseti-fern",
+      "enabled": true,
+      "required": false,
+      "ssh_user": "panoseti",
+      "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
+      "repo": "/home/panoseti/Codebase/U-Blox_F9T_Config",
+      "agent_script": "agent_v1.py",
+      "find_ublox_script": "/home/panoseti/Codebase/U-Blox_F9T_Config/gnss_scripts/find_ublox.sh",
+      "logdir": "gnss_logging",
+      "telem_dir": "gnss_telem",
+      "cast_addr": "10.200.146.1:50051",
+      "ctrl_addr": "10.200.146.1:50051",
+      "verbosity": 3
+    },
+
+    "gattini": {
+      "daq_name": "GATTINI",
+      "host": "panoseti-gattini",
+      "enabled": true,
+      "required": false,
+      "ssh_user": "panoseti",
+      "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
+      "repo": "/home/panoseti/U-Blox_F9T_Config",
+      "agent_script": "agent_v1.py",
+      "find_ublox_script": "/home/panoseti/U-Blox_F9T_Config/gnss_scripts/find_ublox.sh",
+      "logdir": "gnss_logging",
+      "telem_dir": "gnss_telem",
+      "cast_addr": "10.200.146.1:50051",
+      "ctrl_addr": "10.200.146.1:50051",
+      "verbosity": 3
+    }
+  }
+}

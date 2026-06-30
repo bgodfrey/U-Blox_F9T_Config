@@ -84,10 +84,6 @@ else
   exit 1
 fi
 
-# Optional: Only act on hostnames matching this regex (e.g., '^SITE' to restrict)
-HOST_FILTER_REGEX='.*'
-# -----------------------------------
-
 # Parse /etc/hosts:
 # - ignore comments/blank lines
 # - ignore IPv6 lines
