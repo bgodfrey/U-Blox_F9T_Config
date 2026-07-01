@@ -61,7 +61,7 @@
   },
 
   "server": {
-    "daq_name": "panoseti-palomar",/home/panoseti/lbe1420_panoseti
+    "daq_name": "panoseti-palomar",
     "host": "localhost",
     "ssh_user": "obs",
     "python": "/home/obs/miniconda3/envs/pygnss_39/bin/python",
