@@ -102,7 +102,7 @@
         "repo": "/home/panoseti/lbe1420_panoseti",
         "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
         "configure_script": "lbe-1420-conf.py",
-        "frequency_hz": 10000000,
+        "frequency_hz": 2,
         "gnss": "recommended"
       }
     },
