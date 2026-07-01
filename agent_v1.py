@@ -1750,6 +1750,15 @@ async def main():
 	global _LOG_PATH, _CAST_ADDR, _CTRL_ADDR, _VERBOSE_TELEM
 	stop = asyncio.Event()
 	install_signal_handlers(stop)
+
+	def control_handshake_complete(creds: dict) -> bool:
+		role = creds.get("role")
+		if role is None:
+			return False
+		if role == pb.Role.TIMING_ONLY:
+			return True
+		return bool(creds.get("mount"))
+
 	try:
 		args = parse_args()
 		_VERBOSE_TELEM = args.verbosity >= 3
@@ -1807,14 +1816,14 @@ async def main():
 
 			# Wait until either we have role+creds, control exits, timeout expires, or a stop signal arrives.
 			handshake_deadline = time.monotonic() + _CONTROL_HANDSHAKE_TIMEOUT_S
-			while not stop.is_set() and not ctrl_task.done() and not (creds["mount"] and creds["role"] is not None):
+			while not stop.is_set() and not ctrl_task.done() and not control_handshake_complete(creds):
 				if time.monotonic() > handshake_deadline:
 					log.warning("[agent] control handshake timed out after %.1fs", _CONTROL_HANDSHAKE_TIMEOUT_S)
 					print(f"[agent] no HelloAck from {_CTRL_ADDR} after {_CONTROL_HANDSHAKE_TIMEOUT_S:.0f}s; retrying", flush=True)
 					await cancel_and_wait(ctrl_task)
 					break
 				await asyncio.sleep(0.1)
-			if ctrl_task.done() and not (creds["mount"] and creds["role"] is not None):
+			if ctrl_task.done() and not control_handshake_complete(creds):
 				with contextlib.suppress(Exception):
 					ser.close()
 				await asyncio.sleep(2.0)
