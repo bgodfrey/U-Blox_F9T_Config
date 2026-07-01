@@ -337,15 +337,15 @@ def _parse_remote_preflight(result: CommandResult) -> tuple[list[Check], bool | 
     return checks, gnss_detected
 
 
-def _parse_register_verify(result: CommandResult) -> Check:
-    """Parse JSON output from verify_manifest_registers.py into one Check."""
+def _parse_register_verify(result: CommandResult) -> tuple[Check, dict[str, Any] | None]:
+    """Parse verify_manifest_registers.py JSON into a compact check and report."""
 
     if result.returncode != 0 and not result.stdout:
-        return Check("register verify", False, _format_cmd_result(result))
+        return Check("register verify", False, _format_cmd_result(result)), None
     try:
         report = json.loads(result.stdout)
     except json.JSONDecodeError:
-        return Check("register verify", False, _format_cmd_result(result))
+        return Check("register verify", False, _format_cmd_result(result)), None
 
     checked = int(report.get("checked", 0))
     matched = int(report.get("matched", 0))
@@ -363,7 +363,7 @@ def _parse_register_verify(result: CommandResult) -> Check:
             detail += f", +{len(mismatches) - 3} more"
     if report.get("error"):
         detail += f"; {report['error']}"
-    return Check("register verify", bool(report.get("ok")), detail)
+    return Check("register verify", bool(report.get("ok")), detail), report
 
 
 def _format_cmd_result(result: CommandResult) -> str:
@@ -564,6 +564,7 @@ def _node_status(
     )
 
     gnss_detected: bool | None = None
+    register_verify_report: dict[str, Any] | None = None
     if not enabled:
         checks.append(Check("node enabled", True, "disabled; remote checks skipped"))
     elif local_only:
@@ -599,9 +600,10 @@ def _node_status(
                 role = "timing_only" if settings.get("timing_mode") == "absolute" else None
                 verify_script = _remote_register_verify_script(node, manifest_path, role)
                 verify_result = _remote_run(node, verify_script, timeout=90.0)
-                checks.append(_parse_register_verify(verify_result))
+                verify_check, register_verify_report = _parse_register_verify(verify_result)
+                checks.append(verify_check)
 
-    return {
+    result = {
         "kind": "node",
         "key": key,
         "daq_name": node.get("daq_name", key),
@@ -622,6 +624,9 @@ def _node_status(
             "verbosity": node.get("verbosity"),
         },
     }
+    if register_verify_report is not None:
+        result["register_verify"] = register_verify_report
+    return result
 
 
 def status_gnss(

@@ -315,6 +315,7 @@ def verify_cfg_data(
             if last_valget_time and (time.time() - last_valget_time) > 0.3:
                 break
 
+    values = []
     mismatches = []
     matched = 0
     # Report missing keys distinctly from value mismatches. Missing usually means
@@ -322,19 +323,25 @@ def verify_cfg_data(
     for key_id in want_ids:
         name, expected = want_by_id[key_id]
         if key_id not in got_by_id:
-            mismatches.append({"key": name, "expected": expected, "actual": None, "status": "missing"})
+            item = {"key": name, "expected": expected, "actual": None, "status": "missing"}
+            values.append(item)
+            mismatches.append(item)
             continue
         actual = got_by_id[key_id]
         if _values_equal(expected, actual):
             matched += 1
+            values.append({"key": name, "expected": expected, "actual": actual, "status": "matched"})
         else:
-            mismatches.append({"key": name, "expected": expected, "actual": actual, "status": "mismatch"})
+            item = {"key": name, "expected": expected, "actual": actual, "status": "mismatch"}
+            values.append(item)
+            mismatches.append(item)
 
     checked = len(want_ids)
     return {
         "ok": not mismatches,
         "checked": checked,
         "matched": matched,
+        "values": values,
         "mismatches": mismatches,
         "skipped": skipped,
     }
@@ -395,7 +402,7 @@ def main() -> int:
     except Exception as exc:
         # Convert operational failures into the same report shape as mismatches
         # so gnss_orchestrator can display or JSON-parse the result consistently.
-        report.update({"error": str(exc), "mismatches": [], "skipped": [], "checked": 0, "matched": 0})
+        report.update({"error": str(exc), "values": [], "mismatches": [], "skipped": [], "checked": 0, "matched": 0})
 
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
