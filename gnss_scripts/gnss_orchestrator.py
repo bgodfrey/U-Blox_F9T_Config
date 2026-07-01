@@ -407,6 +407,29 @@ def _parse_remote_preflight(result: CommandResult) -> tuple[list[Check], bool | 
     return checks, gnss_detected
 
 
+def _summarize_bodnar_status(detail: str) -> str:
+    """Condense verbose lbe-1420-conf.py --status output for human status."""
+
+    if detail.startswith("exit "):
+        return detail
+
+    fields: list[str] = []
+    patterns = [
+        ("fix", r"fix:\s*([^;]+)"),
+        ("satellites", r"satellites:\s*([^;]+)"),
+        ("GPS lock", r"GPS lock:\s*([^;]+)"),
+        ("PLL lock", r"PLL lock:\s*([^;]+)"),
+        ("antenna", r"antenna:\s*([^;]+)"),
+        ("OUT1", r"OUT1:\s*([^;]+)"),
+    ]
+    for label, pattern in patterns:
+        match = re.search(pattern, detail)
+        if match:
+            fields.append(f"{label} {match.group(1).strip()}")
+
+    return "; ".join(fields) if fields else detail[:240]
+
+
 def _parse_bodnar_status(result: CommandResult) -> tuple[list[Check], bool | None]:
     """Parse remote Bodnar status output into checks and detection state."""
 
@@ -430,7 +453,7 @@ def _parse_bodnar_status(result: CommandResult) -> tuple[list[Check], bool | Non
         elif kind == "BODNAR":
             detail = parts[2]
             detected = status == "OK"
-            checks.append(Check("bodnar detected", detected, detail))
+            checks.append(Check("bodnar detected", detected, _summarize_bodnar_status(detail)))
         else:
             checks.append(Check("bodnar preflight output", False, line))
 
