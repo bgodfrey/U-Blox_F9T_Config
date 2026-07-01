@@ -141,6 +141,28 @@ def _resolve_under_repo(repo: str, value: str) -> str:
     return str(Path(repo) / value)
 
 
+def _bodnar_config(defaults: dict[str, Any], node: dict[str, Any]) -> dict[str, Any]:
+    """Merge default and per-node Leo Bodnar settings."""
+
+    merged = dict(defaults.get("bodnar") or {})
+    merged.update(node.get("bodnar") or {})
+    return merged
+
+
+def _bodnar_paths(defaults: dict[str, Any], node: dict[str, Any]) -> dict[str, Any]:
+    """Resolve the Bodnar Python, repo, and script paths for one node."""
+
+    bodnar = _bodnar_config(defaults, node)
+    repo = str(bodnar.get("repo") or "")
+    script = str(bodnar.get("configure_script") or "lbe-1420-conf.py")
+    python = str(bodnar.get("python") or node.get("python") or "")
+    return {
+        "python": python,
+        "repo": repo,
+        "script": _resolve_under_repo(repo, script) if repo else script,
+    }
+
+
 def _mode_settings(config: dict[str, Any], mode: str) -> dict[str, Any]:
     """Return manifest/timing settings for a start mode."""
 
@@ -307,6 +329,54 @@ def _remote_register_verify_script(node: dict[str, Any], manifest_path: str, rol
     )
 
 
+def _remote_bodnar_status_script(paths: dict[str, str], timeout_sec: float) -> str:
+    """Build a remote read-only Bodnar preflight/status script."""
+
+    checks = [
+        ("bodnar python executable", "-x", paths["python"], paths["python"]),
+        ("bodnar repo directory", "-d", paths["repo"], paths["repo"]),
+        ("bodnar configure script", "-f", paths["script"], paths["script"]),
+    ]
+    lines = [
+        "emit_check() {",
+        "  label=$1",
+        "  test_arg=$2",
+        "  path=$3",
+        "  detail=$4",
+        "  if test \"$test_arg\" \"$path\"; then",
+        "    printf 'CHECK\\tOK\\t%s\\t%s\\n' \"$label\" \"$detail\"",
+        "  else",
+        "    printf 'CHECK\\tFAIL\\t%s\\t%s\\n' \"$label\" \"$detail\"",
+        "  fi",
+        "}",
+        "ok=1",
+    ]
+    for label, test_arg, path, detail in checks:
+        lines.append(
+            "emit_check "
+            + " ".join(shlex.quote(value) for value in [label, test_arg, path, detail])
+        )
+        lines.append(f"test {shlex.quote(test_arg)} {shlex.quote(path)} || ok=0")
+
+    cmd = _shell_join([paths["python"], paths["script"], "--status"])
+    lines.extend(
+        [
+            "if [ \"$ok\" -eq 1 ]; then",
+            f"  cd {shlex.quote(paths['repo'])}",
+            f"  bodnar_output=$(timeout {float(timeout_sec):g}s {cmd} 2>&1)",
+            "  bodnar_rc=$?",
+            "  bodnar_output=${bodnar_output//$'\\n'/; }",
+            "  if [ \"$bodnar_rc\" -eq 0 ]; then",
+            "    printf 'BODNAR\\tOK\\t%s\\n' \"$bodnar_output\"",
+            "  else",
+            "    printf 'BODNAR\\tFAIL\\texit %s: %s\\n' \"$bodnar_rc\" \"$bodnar_output\"",
+            "  fi",
+            "fi",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _parse_remote_preflight(result: CommandResult) -> tuple[list[Check], bool | None]:
     """Parse remote preflight output into checks and GNSS detection state."""
 
@@ -335,6 +405,36 @@ def _parse_remote_preflight(result: CommandResult) -> tuple[list[Check], bool | 
             checks.append(Check("remote preflight output", False, line))
 
     return checks, gnss_detected
+
+
+def _parse_bodnar_status(result: CommandResult) -> tuple[list[Check], bool | None]:
+    """Parse remote Bodnar status output into checks and detection state."""
+
+    checks: list[Check] = []
+    detected: bool | None = None
+    if result.returncode != 0:
+        checks.append(Check("bodnar preflight", False, _format_cmd_result(result)))
+        return checks, detected
+
+    for line in result.stdout.splitlines():
+        parts = line.split("\t", 3)
+        if len(parts) < 3:
+            checks.append(Check("bodnar preflight output", False, line))
+            continue
+        kind = parts[0]
+        status = parts[1]
+        if kind == "CHECK":
+            label = parts[2]
+            detail = parts[3] if len(parts) > 3 else ""
+            checks.append(Check(label, status == "OK", detail))
+        elif kind == "BODNAR":
+            detail = parts[2]
+            detected = status == "OK"
+            checks.append(Check("bodnar detected", detected, detail))
+        else:
+            checks.append(Check("bodnar preflight output", False, line))
+
+    return checks, detected
 
 
 def _parse_register_verify(result: CommandResult) -> tuple[Check, dict[str, Any] | None]:
@@ -516,6 +616,7 @@ def _node_status(
     local_only: bool,
     verify_registers: bool = False,
     mode_settings: dict[str, Any] | None = None,
+    check_bodnar: bool = True,
 ) -> dict[str, Any]:
     """Validate one DAQ/GNSS node entry.
 
@@ -540,6 +641,9 @@ def _node_status(
     find_ublox = _resolve_under_repo(repo, str(node.get("find_ublox_script", "gnss_scripts/find_ublox.sh"))) if repo else ""
     logdir = _resolve_under_repo(repo, str(node.get("logdir", "logging"))) if repo else ""
     telem_dir = _resolve_under_repo(repo, str(node.get("telem_dir", "telem"))) if repo else ""
+    bodnar = _bodnar_config(defaults, node)
+    bodnar_enabled = _str_bool(bodnar.get("enabled", False))
+    bodnar_paths = _bodnar_paths(defaults, node)
 
     # These fields are the minimum needed to start an agent in the future:
     # SSH target, Python executable, repo/script locations, gRPC addresses, and
@@ -564,13 +668,27 @@ def _node_status(
     )
 
     gnss_detected: bool | None = None
+    bodnar_detected: bool | None = None
     register_verify_report: dict[str, Any] | None = None
+    if check_bodnar and bodnar_enabled:
+        checks.extend(
+            _check_required_fields(
+                f"nodes.{key}.bodnar",
+                bodnar,
+                ["repo", "python", "configure_script", "frequency_hz", "gnss"],
+            )
+        )
+    elif check_bodnar:
+        checks.append(Check("bodnar enabled", True, "disabled"))
+
     if not enabled:
         checks.append(Check("node enabled", True, "disabled; remote checks skipped"))
     elif local_only:
         # Local-only mode is useful during config editing and CI because it does
         # not require network access or SSH keys.
         checks.append(Check("remote checks", True, "skipped by --local-only"))
+        if check_bodnar and bodnar_enabled:
+            checks.append(Check("bodnar remote checks", True, "skipped by --local-only"))
     else:
         # First prove SSH works. If it does not, the remaining remote path checks
         # would all fail for the same reason and make the report noisier.
@@ -593,6 +711,15 @@ def _node_status(
             remote_checks, gnss_detected = _parse_remote_preflight(preflight_result)
             checks.extend(remote_checks)
 
+            if check_bodnar and bodnar_enabled:
+                bodnar_script = _remote_bodnar_status_script(
+                    bodnar_paths,
+                    float(bodnar.get("timeout_sec", 20.0)),
+                )
+                bodnar_result = _remote_run(node, bodnar_script, timeout=float(bodnar.get("timeout_sec", 20.0)) + 10.0)
+                bodnar_checks, bodnar_detected = _parse_bodnar_status(bodnar_result)
+                checks.extend(bodnar_checks)
+
             if verify_registers:
                 settings = mode_settings or {"timing_mode": "differential", "receiver_manifest": "manifest_f9t.json5"}
                 manifest = str(settings.get("receiver_manifest") or "manifest_f9t.json5")
@@ -611,6 +738,7 @@ def _node_status(
         "enabled": enabled,
         "required": _str_bool(node.get("required", False)),
         "gnss_detected": gnss_detected,
+        "bodnar_detected": bodnar_detected,
         "checks": checks,
         "resolved": {
             "python": node.get("python"),
@@ -622,6 +750,15 @@ def _node_status(
             "cast_addr": node.get("cast_addr"),
             "ctrl_addr": node.get("ctrl_addr"),
             "verbosity": node.get("verbosity"),
+            "bodnar": {
+                "enabled": bodnar_enabled,
+                "required": _str_bool(bodnar.get("required", False)),
+                "python": bodnar_paths["python"],
+                "repo": bodnar_paths["repo"],
+                "configure_script": bodnar_paths["script"],
+                "frequency_hz": bodnar.get("frequency_hz"),
+                "gnss": bodnar.get("gnss"),
+            },
         },
     }
     if register_verify_report is not None:
@@ -861,7 +998,7 @@ def _start_node(
 ) -> StartResult:
     """Start one remote GNSS agent, or describe the action in dry-run mode."""
 
-    node_status = _node_status(key, raw_node, defaults, local_only=False)
+    node_status = _node_status(key, raw_node, defaults, local_only=False, check_bodnar=False)
     node = _merge(defaults, raw_node)
     node_status["config"] = node
     script, log_path = _remote_agent_launch_script(node_status)
@@ -923,6 +1060,114 @@ def _start_node(
     )
 
 
+def _bodnar_configure_script(paths: dict[str, str], bodnar: dict[str, Any]) -> str:
+    """Build a remote script that configures a Leo Bodnar LBE-1420."""
+
+    commands = ["set -e", f"cd {shlex.quote(paths['repo'])}"]
+    frequency = bodnar.get("frequency_hz")
+    gnss = bodnar.get("gnss")
+    if frequency is not None and frequency != "":
+        commands.append(_shell_join([paths["python"], paths["script"], "--f1", frequency]))
+    if gnss:
+        commands.append(_shell_join([paths["python"], paths["script"], "--gnss", gnss]))
+    commands.append(_shell_join([paths["python"], paths["script"], "--status"]))
+    return "\n".join(commands)
+
+
+def _configure_bodnar(
+    key: str,
+    raw_node: dict[str, Any],
+    defaults: dict[str, Any],
+    *,
+    dry_run: bool,
+) -> StartResult:
+    """Configure one remote Leo Bodnar receiver, or describe the action."""
+
+    node = _merge(defaults, raw_node)
+    bodnar = _bodnar_config(defaults, node)
+    paths = _bodnar_paths(defaults, node)
+    enabled = _str_bool(bodnar.get("enabled", False))
+    required = _str_bool(bodnar.get("required", False))
+    daq_name = str(node.get("daq_name", key))
+    host = str(node.get("host", key))
+
+    script = _bodnar_configure_script(paths, bodnar)
+    command = _shell_join(_ssh_base(node) + ["bash -c " + shlex.quote(script)])
+    detail = f"{bodnar.get('frequency_hz')} Hz, gnss={bodnar.get('gnss')}"
+
+    if not enabled:
+        return StartResult(
+            kind="bodnar",
+            key=key,
+            daq_name=daq_name,
+            host=host,
+            status="skipped",
+            detail="Bodnar disabled",
+            required=required,
+            command=command,
+            script=script,
+        )
+
+    preflight_script = _remote_bodnar_status_script(paths, float(bodnar.get("timeout_sec", 20.0)))
+    if dry_run:
+        return StartResult(
+            kind="bodnar",
+            key=key,
+            daq_name=daq_name,
+            host=host,
+            status="dry-run",
+            detail=f"would configure Bodnar {detail}",
+            required=required,
+            command=command,
+            script=script,
+        )
+
+    ssh_result = _remote_run(node, "true")
+    if ssh_result.returncode != 0:
+        return StartResult(
+            kind="bodnar",
+            key=key,
+            daq_name=daq_name,
+            host=host,
+            status="failed",
+            detail="ssh unreachable: " + _format_cmd_result(ssh_result),
+            required=required,
+            command=command,
+            script=script,
+        )
+
+    preflight_result = _remote_run(node, preflight_script, timeout=float(bodnar.get("timeout_sec", 20.0)) + 10.0)
+    preflight_checks, detected = _parse_bodnar_status(preflight_result)
+    if detected is not True or not all(check.ok for check in preflight_checks):
+        failed = next((check for check in preflight_checks if not check.ok), None)
+        reason = failed.detail if failed else _format_cmd_result(preflight_result)
+        return StartResult(
+            kind="bodnar",
+            key=key,
+            daq_name=daq_name,
+            host=host,
+            status="failed",
+            detail=f"Bodnar preflight failed: {reason}",
+            required=required,
+            command=command,
+            script=script,
+        )
+
+    result = _remote_run(node, script, timeout=float(bodnar.get("timeout_sec", 20.0)) + 20.0)
+    ok = result.returncode == 0
+    return StartResult(
+        kind="bodnar",
+        key=key,
+        daq_name=daq_name,
+        host=host,
+        status="configured" if ok else "failed",
+        detail=detail if ok else _format_cmd_result(result),
+        required=required,
+        command=command,
+        script=script,
+    )
+
+
 def start_gnss(
     config_path: str | os.PathLike[str] = DEFAULT_CONFIG,
     *,
@@ -930,6 +1175,7 @@ def start_gnss(
     dry_run: bool = False,
     include_disabled: bool = False,
     mode: str = "differential",
+    configure_bodnar: bool = False,
 ) -> dict[str, Any]:
     """Start the GNSS server and configured remote agents.
 
@@ -949,12 +1195,29 @@ def start_gnss(
     results = [_start_server(config, dry_run=dry_run, mode=mode)]
 
     if results[0].status == "failed":
-        return {"config_path": str(config_path), "dry_run": dry_run, "mode": mode, "results": results}
+        return {"config_path": str(config_path), "dry_run": dry_run, "mode": mode, "bodnar": configure_bodnar, "results": results}
 
     for key, raw_node in _selected_node_items(config, nodes, include_disabled=include_disabled):
+        if configure_bodnar:
+            bodnar_result = _configure_bodnar(key, raw_node, defaults, dry_run=dry_run)
+            results.append(bodnar_result)
+            if bodnar_result.required and bodnar_result.status == "failed":
+                node = _merge(defaults, raw_node)
+                results.append(
+                    StartResult(
+                        kind="node",
+                        key=key,
+                        daq_name=str(node.get("daq_name", key)),
+                        host=str(node.get("host", key)),
+                        status="skipped",
+                        detail="required Bodnar configuration failed",
+                        required=_str_bool(node.get("required", False)),
+                    )
+                )
+                continue
         results.append(_start_node(key, raw_node, defaults, dry_run=dry_run))
 
-    return {"config_path": str(config_path), "dry_run": dry_run, "mode": mode, "results": results}
+    return {"config_path": str(config_path), "dry_run": dry_run, "mode": mode, "bodnar": configure_bodnar, "results": results}
 
 
 def _stop_script(screen_name: str, process_match: str, grace_sec: int, log_path: str | None) -> str:
@@ -1261,7 +1524,7 @@ def _print_start(report: dict[str, Any]) -> None:
         if item.detail:
             print(f"  detail: {item.detail}")
         if report.get("dry_run") and item.script:
-            if item.kind == "node":
+            if item.kind in {"node", "bodnar"}:
                 print(f"  target: ssh {item.host}")
                 print("  remote script:")
             else:
@@ -1340,6 +1603,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     start = sub.add_parser("start", help="start the GNSS server and selected agents")
     start.add_argument("--node", action="append", default=[], help="limit start to a node key, host, or DAQ name")
     start.add_argument("--mode", choices=["differential", "absolute"], default="differential", help="GNSS timing mode")
+    start.add_argument("--bodnar", action="store_true", help="configure Leo Bodnar LBE-1420 devices before starting agents")
     start.add_argument("--include-disabled", action="store_true", help="include disabled nodes")
     start.add_argument("--dry-run", action="store_true", help="show launch commands without running them")
     start.add_argument("--json", action="store_true", help="emit machine-readable JSON")
@@ -1393,6 +1657,7 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=args.dry_run,
             include_disabled=args.include_disabled,
             mode=args.mode,
+            configure_bodnar=args.bodnar,
         )
         if args.json:
             print(json.dumps(_jsonable(report), indent=2, sort_keys=True))
