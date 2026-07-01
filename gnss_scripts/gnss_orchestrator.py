@@ -284,6 +284,29 @@ def _remote_preflight_script(paths: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
+def _remote_register_verify_script(node: dict[str, Any], manifest_path: str, role: str | None) -> str:
+    """Build a remote command that verifies manifest registers."""
+
+    repo = str(node["repo"])
+    verifier = _resolve_under_repo(repo, "gnss_scripts/verify_manifest_registers.py")
+    args = [
+        str(node["python"]),
+        verifier,
+        "--manifest",
+        manifest_path,
+        "--json",
+    ]
+    if role:
+        args.extend(["--role", role])
+    return "\n".join(
+        [
+            "set -euo pipefail",
+            f"cd {shlex.quote(repo)}",
+            _shell_join(args),
+        ]
+    )
+
+
 def _parse_remote_preflight(result: CommandResult) -> tuple[list[Check], bool | None]:
     """Parse remote preflight output into checks and GNSS detection state."""
 
@@ -312,6 +335,35 @@ def _parse_remote_preflight(result: CommandResult) -> tuple[list[Check], bool | 
             checks.append(Check("remote preflight output", False, line))
 
     return checks, gnss_detected
+
+
+def _parse_register_verify(result: CommandResult) -> Check:
+    """Parse JSON output from verify_manifest_registers.py into one Check."""
+
+    if result.returncode != 0 and not result.stdout:
+        return Check("register verify", False, _format_cmd_result(result))
+    try:
+        report = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return Check("register verify", False, _format_cmd_result(result))
+
+    checked = int(report.get("checked", 0))
+    matched = int(report.get("matched", 0))
+    mismatches = report.get("mismatches") or []
+    skipped = report.get("skipped") or []
+    detail = f"{matched}/{checked} matched"
+    if report.get("role"):
+        detail += f" role={report['role']}"
+    if skipped:
+        detail += f"; {len(skipped)} unsupported keys skipped"
+    if mismatches:
+        preview = ", ".join(str(item.get("key", "?")) for item in mismatches[:3])
+        detail += f"; mismatches: {preview}"
+        if len(mismatches) > 3:
+            detail += f", +{len(mismatches) - 3} more"
+    if report.get("error"):
+        detail += f"; {report['error']}"
+    return Check("register verify", bool(report.get("ok")), detail)
 
 
 def _format_cmd_result(result: CommandResult) -> str:
@@ -462,6 +514,8 @@ def _node_status(
     defaults: dict[str, Any],
     *,
     local_only: bool,
+    verify_registers: bool = False,
+    mode_settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate one DAQ/GNSS node entry.
 
@@ -538,6 +592,15 @@ def _node_status(
             remote_checks, gnss_detected = _parse_remote_preflight(preflight_result)
             checks.extend(remote_checks)
 
+            if verify_registers:
+                settings = mode_settings or {"timing_mode": "differential", "receiver_manifest": "manifest_f9t.json5"}
+                manifest = str(settings.get("receiver_manifest") or "manifest_f9t.json5")
+                manifest_path = _resolve_under_repo(repo, manifest)
+                role = "timing_only" if settings.get("timing_mode") == "absolute" else None
+                verify_script = _remote_register_verify_script(node, manifest_path, role)
+                verify_result = _remote_run(node, verify_script, timeout=90.0)
+                checks.append(_parse_register_verify(verify_result))
+
     return {
         "kind": "node",
         "key": key,
@@ -567,6 +630,8 @@ def status_gnss(
     nodes: list[str] | None = None,
     include_disabled: bool = False,
     local_only: bool = False,
+    verify_registers: bool = False,
+    mode: str = "differential",
 ) -> dict[str, Any]:
     """Build a read-only GNSS deployment status report.
 
@@ -588,6 +653,7 @@ def status_gnss(
     defaults = config.get("defaults", {})
     raw_nodes = config.get("nodes", {})
     selected = set(nodes or [])
+    mode_settings = _mode_settings(config, mode)
 
     # Always include the server status. Node filtering applies only to DAQ nodes.
     results = [_server_status(config)]
@@ -598,9 +664,18 @@ def status_gnss(
         enabled = _str_bool(_merge(defaults, node).get("enabled", True))
         if not enabled and not include_disabled:
             continue
-        results.append(_node_status(key, node, defaults, local_only=local_only))
+        results.append(
+            _node_status(
+                key,
+                node,
+                defaults,
+                local_only=local_only,
+                verify_registers=verify_registers,
+                mode_settings=mode_settings,
+            )
+        )
 
-    return {"config_path": str(config_path), "results": results}
+    return {"config_path": str(config_path), "mode": mode, "verify_registers": verify_registers, "results": results}
 
 
 def _selected_node_items(
@@ -1151,6 +1226,9 @@ def _print_status(report: dict[str, Any]) -> None:
     """
 
     print(f"Config: {report['config_path']}")
+    if report.get("verify_registers"):
+        print(f"Timing: {report.get('mode', 'differential')}")
+        print("Register verify: enabled")
     print()
     for item in report["results"]:
         label = item["daq_name"]
@@ -1248,6 +1326,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     status = sub.add_parser("status", help="validate config and check GNSS deployment prerequisites")
     status.add_argument("--node", action="append", default=[], help="limit status to a node key, host, or DAQ name")
+    status.add_argument("--mode", choices=["differential", "absolute"], default="differential", help="GNSS timing mode for register verification")
+    status.add_argument("--verify-registers", action="store_true", help="read receiver CFG registers and compare against the selected manifest")
     status.add_argument("--include-disabled", action="store_true", help="include disabled nodes")
     status.add_argument("--local-only", action="store_true", help="skip SSH and remote checks")
     status.add_argument("--json", action="store_true", help="emit machine-readable JSON")
@@ -1284,6 +1364,8 @@ def main(argv: list[str] | None = None) -> int:
             nodes=args.node,
             include_disabled=args.include_disabled,
             local_only=args.local_only,
+            verify_registers=args.verify_registers,
+            mode=args.mode,
         )
         if args.json:
             print(json.dumps(_jsonable(report), indent=2, sort_keys=True))
