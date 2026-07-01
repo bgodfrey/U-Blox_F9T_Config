@@ -61,7 +61,7 @@
   },
 
   "server": {
-    "daq_name": "panoseti-palomar",
+    "daq_name": "panoseti-palomar",/home/panoseti/lbe1420_panoseti
     "host": "localhost",
     "ssh_user": "obs",
     "python": "/home/obs/miniconda3/envs/pygnss_39/bin/python",
@@ -97,13 +97,13 @@
       "ctrl_addr": "10.200.146.1:50051",
       "verbosity": 2,
       "bodnar": {
-      "enabled": true,
-      "required": false,
-      "repo": "/home/panoseti/lbe1420_panoseti",
-      "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
-      "configure_script": "lbe-1420-conf.py",
-      "frequency_hz": 10000000,
-      "gnss": "recommended"
+        "enabled": true,
+        "required": false,
+        "repo": "/home/panoseti/lbe1420_panoseti",
+        "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
+        "configure_script": "lbe-1420-conf.py",
+        "frequency_hz": 10000000,
+        "gnss": "recommended"
       }
     },
 
@@ -123,13 +123,13 @@
       "ctrl_addr": "10.200.146.1:50051",
       "verbosity": 2,
       "bodnar": {
-      "enabled": true,
-      "required": false,
-      "repo": "/home/panoseti/Codebase/lbe1420_panoseti",
-      "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
-      "configure_script": "lbe-1420-conf.py",
-      "frequency_hz": 10000000,
-      "gnss": "recommended"
+        "enabled": true,
+        "required": false,
+        "repo": "/home/panoseti/Codebase/lbe1420_panoseti",
+        "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
+        "configure_script": "lbe-1420-conf.py",
+        "frequency_hz": 10000000,
+        "gnss": "recommended"
       }
     },
 
@@ -149,13 +149,13 @@
       "ctrl_addr": "10.200.146.1:50051",
       "verbosity": 2,
       "bodnar": {
-      "enabled": true,
-      "required": false,
-      "repo": "/home/panoseti/Codebase/lbe1420_panoseti",
-      "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
-      "configure_script": "lbe-1420-conf.py",
-      "frequency_hz": 10000000,
-      "gnss": "recommended"
+        "enabled": true,
+        "required": false,
+        "repo": "/home/panoseti/Codebase/lbe1420_panoseti",
+        "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
+        "configure_script": "lbe-1420-conf.py",
+        "frequency_hz": 10000000,
+        "gnss": "recommended"
       }
     },
 
@@ -175,13 +175,13 @@
       "ctrl_addr": "10.200.146.1:50051",
       "verbosity": 2,
       "bodnar": {
-      "enabled": true,
-      "required": false,
-      "repo": "/home/panoseti/lbe1420_panoseti",
-      "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
-      "configure_script": "lbe-1420-conf.py",
-      "frequency_hz": 10000000,
-      "gnss": "recommended"
+        "enabled": false,
+        "required": false,
+        "repo": "/home/panoseti/lbe1420_panoseti",
+        "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
+        "configure_script": "lbe-1420-conf.py",
+        "frequency_hz": 10000000,
+        "gnss": "recommended"
       }
     }
   }
