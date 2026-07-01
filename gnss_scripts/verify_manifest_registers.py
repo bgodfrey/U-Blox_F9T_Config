@@ -5,6 +5,11 @@ This is intentionally a small standalone CLI for operator/status checks. It
 loads the same manifest format used by server_v1.py, expands global/role/device
 settings for the attached receiver, reads current CFG values with UBX-CFG-VALGET,
 and reports mismatches.
+
+The script is read-only with respect to the receiver: it polls CFG values but
+does not write any registers. It should still be run with the usual care around
+serial ownership, because another process actively talking to the same receiver
+can interleave responses and make verification noisy.
 """
 
 from __future__ import annotations
@@ -29,6 +34,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+# Reuse the production manifest expansion code instead of maintaining a second
+# implementation of the global/role/device merge rules in this verifier.
 import caster_setup_pb2 as pb  # noqa: E402
 import server_v1  # noqa: E402
 
@@ -37,6 +44,7 @@ HEX10 = re.compile(r"[0-9A-F]{10}$")
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI options for selecting the manifest, receiver, and output mode."""
     parser = argparse.ArgumentParser(description="Verify u-blox CFG registers against a manifest")
     parser.add_argument("--manifest", required=True, help="path to manifest JSON5 file")
     parser.add_argument(
@@ -54,10 +62,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def _norm(key: str) -> str:
+    """Normalize manifest/pyubx2 CFG names into pyubx2's CFG_* style."""
     return key.strip().upper().replace("-", "_")
 
 
 def _name_to_keyid(name: str) -> int:
+    """Resolve a human-readable CFG key name to the numeric u-blox key ID."""
     rec = CFGDB.get(name.upper())
     if rec is None:
         raise KeyError(f"unknown CFG name: {name}")
@@ -69,6 +79,9 @@ def _name_to_keyid(name: str) -> int:
 
 
 def _merge_cfg_one(results_by_id: dict[int, Any], key: Any, value: Any) -> None:
+    """Store one returned CFG value, accepting either numeric IDs or CFG names."""
+    # pyubx2 and older helper code can expose keys as ints, hex strings, or
+    # CFG_* names. Convert all of those to the numeric key ID used for compare.
     if isinstance(key, int):
         key_id = key
     elif isinstance(key, str):
@@ -90,6 +103,10 @@ def _merge_cfg_one(results_by_id: dict[int, Any], key: Any, value: Any) -> None:
 
 
 def _merge_cfg_results(results_by_id: dict[int, Any], parsed: Any) -> None:
+    """Extract all CFG values from one UBX-CFG-VALGET response message."""
+    # pyubx2 has represented VALGET payloads differently across versions. The
+    # branches below intentionally support the common shapes so this verifier is
+    # less fragile across DAQ nodes with slightly different environments.
     cfg = getattr(parsed, "cfgData", None) or getattr(parsed, "cfgdata", None)
     if isinstance(cfg, dict):
         for key, value in cfg.items():
@@ -102,10 +119,13 @@ def _merge_cfg_results(results_by_id: dict[int, Any], parsed: Any) -> None:
         return
 
     attrs = getattr(parsed, "__dict__", {})
+    # Some pyubx2 releases expose returned values directly as CFG_* attributes.
     for name, value in attrs.items():
         if isinstance(name, str) and name.startswith("CFG_"):
             _merge_cfg_one(results_by_id, name, value)
 
+    # Other releases expose numbered key/value fields such as keyID_01 and
+    # valU4_01. Pair those up by index before merging.
     for name, key_id in attrs.items():
         match = re.match(r"^(?:keyID|key|cfgKey|keyid)_?(\d+)$", name)
         if not match:
@@ -133,6 +153,8 @@ def _merge_cfg_results(results_by_id: dict[int, Any], parsed: Any) -> None:
 
 
 def _values_equal(expected: Any, actual: Any) -> bool:
+    """Compare manifest and receiver values while respecting simple type quirks."""
+    # Booleans often arrive from VALGET as 0/1, so compare them by truth value.
     if isinstance(expected, bool):
         return bool(actual) == expected
     if isinstance(expected, (int, bool)) and isinstance(actual, (int, bool)):
@@ -146,6 +168,7 @@ def _values_equal(expected: Any, actual: Any) -> bool:
 
 
 def get_uniqid(port: str, baud: int, timeout: float = 0.5, tries: int = 3) -> str:
+    """Poll SEC-UNIQID on a serial port and return the 10-character receiver ID."""
     with serial.Serial(port, baud, timeout=timeout) as ser:
         reader = UBXReader(ser, protfilter=UBX_PROTOCOL)
         poll = UBXMessage("SEC", "SEC-UNIQID", POLL)
@@ -154,6 +177,8 @@ def get_uniqid(port: str, baud: int, timeout: float = 0.5, tries: int = 3) -> st
             ser.write(poll.serialize())
             ser.flush()
             deadline = time.time() + timeout
+            # Read until the requested SEC-UNIQID response arrives or this poll
+            # attempt times out. Other UBX traffic is ignored.
             while time.time() < deadline:
                 try:
                     _, msg = reader.read()
@@ -168,6 +193,7 @@ def get_uniqid(port: str, baud: int, timeout: float = 0.5, tries: int = 3) -> st
 
 
 def _candidate_ports() -> list[str]:
+    """Return serial ports ordered so likely u-blox receivers are probed first."""
     ports = []
     for info in list_ports.comports():
         text = " ".join(str(getattr(info, attr, "") or "") for attr in ("device", "description", "manufacturer", "product", "hwid"))
@@ -178,10 +204,13 @@ def _candidate_ports() -> list[str]:
 
 
 def discover_receiver(port: str, baud: int) -> tuple[str, str]:
+    """Find a receiver serial port and its unique ID."""
     if port != "auto":
         return port, get_uniqid(port, baud)
 
     errors = []
+    # Auto-discovery probes every visible serial port. Failures are collected so
+    # the operator gets useful context instead of a generic "not found" message.
     for candidate in _candidate_ports():
         try:
             return candidate, get_uniqid(candidate, baud)
@@ -192,6 +221,7 @@ def discover_receiver(port: str, baud: int) -> tuple[str, str]:
 
 
 def _role_enum(role: str) -> int:
+    """Convert a CLI/manifest role string to the protobuf Role enum."""
     if role == "base":
         return pb.Role.BASE
     if role == "receiver":
@@ -202,6 +232,7 @@ def _role_enum(role: str) -> int:
 
 
 def _manifest_role(manifest: dict[str, Any], device_id: str) -> str:
+    """Look up the attached receiver's role from the manifest device table."""
     device = (manifest.get("devices") or {}).get(device_id.strip().upper())
     if not device:
         raise KeyError(f"device {device_id} not found in manifest devices")
@@ -212,6 +243,10 @@ def _manifest_role(manifest: dict[str, Any], device_id: str) -> str:
 
 
 async def expected_cfg_data(manifest: dict[str, Any], device_id: str, role: str) -> tuple[list[str], list[tuple[str, Any]]]:
+    """Expand manifest settings into the exact CFG key/value pairs to verify."""
+    # server_v1 already knows how to combine global settings, role defaults, and
+    # per-device overrides. Calling it here keeps status checks aligned with what
+    # the live server would push to the receiver.
     layers, items = await server_v1.cfg_from_manifest_for_device(manifest, device_id, _role_enum(role))
     cfg_data: list[tuple[str, Any]] = []
     for item in items:
@@ -228,11 +263,14 @@ def verify_cfg_data(
     layer: str,
     timeout_per_chunk: float,
 ) -> dict[str, Any]:
+    """Read current receiver CFG values and compare them with expected values."""
     want_by_id: dict[int, tuple[str, Any]] = {}
     want_ids: list[int] = []
     skipped = []
 
     for name, value in cfg_data:
+        # Skip manifest keys this pyubx2 version cannot resolve. They are still
+        # reported, but they should not make every verification fail outright.
         try:
             key_id = _name_to_keyid(name)
         except KeyError as exc:
@@ -245,6 +283,9 @@ def verify_cfg_data(
     poll_layer = {"RAM": 0, "BBR": 1, "FLASH": 2, "DEFAULT": 7}.get(layer.upper(), 0)
     got_by_id: dict[int, Any] = {}
 
+    # VALGET supports multiple keys per request, but large requests can be
+    # awkward to debug and may behave differently across firmware. Chunks of 32
+    # keep the request size modest while still being fast for status checks.
     for i in range(0, len(want_ids), 32):
         chunk_ids = want_ids[i : i + 32]
         msg_get = UBXMessage.config_poll(layer=poll_layer, position=0, keys=chunk_ids)
@@ -256,6 +297,8 @@ def verify_cfg_data(
         deadline = time.time() + timeout_per_chunk
         last_valget_time = None
 
+        # Keep reading until this chunk is satisfied, the timeout expires, or
+        # VALGET responses appear to have stopped for a short grace period.
         while time.time() < deadline:
             try:
                 _, parsed = reader.read()
@@ -274,6 +317,8 @@ def verify_cfg_data(
 
     mismatches = []
     matched = 0
+    # Report missing keys distinctly from value mismatches. Missing usually means
+    # the receiver did not return a value for a requested key/layer.
     for key_id in want_ids:
         name, expected = want_by_id[key_id]
         if key_id not in got_by_id:
@@ -296,6 +341,7 @@ def verify_cfg_data(
 
 
 def print_human(report: dict[str, Any]) -> None:
+    """Print a compact operator-readable verification report."""
     status = "OK" if report["ok"] else "FAIL"
     print(f"{status} {report.get('device_id', 'UNKNOWN')} role={report['role']} port={report.get('port', 'unknown')}")
     print(f"  manifest: {report['manifest']}")
@@ -312,9 +358,12 @@ def print_human(report: dict[str, Any]) -> None:
 
 
 def main() -> int:
+    """Run the CLI workflow and return a shell-friendly status code."""
     args = parse_args()
     manifest_path = Path(args.manifest).resolve()
     manifest = json5.load(open(manifest_path, "r", encoding="utf-8"))
+    # The manifest may specify the preferred verification layer. Operators can
+    # still override it when checking BBR/FLASH or doing a targeted debug run.
     layer = (args.layer or manifest.get("global", {}).get("verify_layer") or "RAM").upper()
 
     report: dict[str, Any] = {
@@ -325,9 +374,14 @@ def main() -> int:
     }
     try:
         port, device_id = discover_receiver(args.port, args.baud)
+        # In normal use, "auto" verifies the role assigned to the physical
+        # receiver in the manifest. The explicit role option is mainly for
+        # debugging a manifest section before deployment.
         role = _manifest_role(manifest, device_id) if args.role == "auto" else args.role
         report["role"] = role
         _, cfg_data = asyncio.run(expected_cfg_data(manifest, device_id, role))
+        # Open the serial port only for the VALGET phase. Discovery opens it
+        # separately so explicit device lookup failures are reported cleanly.
         with serial.Serial(port, args.baud, timeout=0.15, write_timeout=0.5) as ser:
             result = verify_cfg_data(ser, cfg_data, layer=layer, timeout_per_chunk=args.timeout)
         report.update(
@@ -339,6 +393,8 @@ def main() -> int:
             }
         )
     except Exception as exc:
+        # Convert operational failures into the same report shape as mismatches
+        # so gnss_orchestrator can display or JSON-parse the result consistently.
         report.update({"error": str(exc), "mismatches": [], "skipped": [], "checked": 0, "matched": 0})
 
     if args.json:
