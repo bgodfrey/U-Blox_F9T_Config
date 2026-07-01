@@ -160,7 +160,7 @@
 
     "5DA30A41BD": {
       alias: "PTI",
-      role: "base",
+      role: "receiver",
       serial: { port: "/dev/ttyACM0", baud: 115200 },
       position: { format: "LLH", lat_deg: 33.3574696, lon_deg: -116.8641556, height_m: 1662.168, acc_m: 0.5},
       antenna: {
