@@ -35,11 +35,12 @@
     // Nodes can override this block if their Bodnar repo, environment, or
     // desired constellation/frequency settings differ.
     "bodnar": {
-      "enabled": true,
+      "present": true,
       "required": false,
       "repo": "/home/panoseti/lbe1420_panoseti",
       "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
       "configure_script": "lbe-1420-conf.py",
+      "out1_enabled": true,
       "frequency_hz": 10000000,
       "gnss": "recommended"
     },
@@ -84,7 +85,7 @@
     "winters": {
       "daq_name": "WINTERS",
       "host": "panoseti-winter",
-      "enabled": true,
+      "present": true,
       "required": false,
       "ssh_user": "panoseti",
       "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
@@ -97,12 +98,13 @@
       "ctrl_addr": "10.200.146.1:50051",
       "verbosity": 2,
       "bodnar": {
-        "enabled": true,
+        "present": true,
         "required": false,
         "repo": "/home/panoseti/lbe1420_panoseti",
         "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
         "configure_script": "lbe-1420-conf.py",
-        "frequency_hz": 2,
+        "out1_enabled": true,
+        "frequency_hz": 10000000,
         "gnss": "recommended"
       }
     },
@@ -110,7 +112,7 @@
     "pti": {
       "daq_name": "PTI",
       "host": "panoseti-pti",
-      "enabled": true,
+      "present": true,
       "required": false,
       "ssh_user": "panoseti",
       "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
@@ -123,11 +125,12 @@
       "ctrl_addr": "10.200.146.1:50051",
       "verbosity": 2,
       "bodnar": {
-        "enabled": true,
+        "present": true,
         "required": false,
         "repo": "/home/panoseti/Codebase/lbe1420_panoseti",
         "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
         "configure_script": "lbe-1420-conf.py",
+        "out1_enabled": true,
         "frequency_hz": 10000000,
         "gnss": "recommended"
       }
@@ -136,7 +139,7 @@
     "fern": {
       "daq_name": "FERN",
       "host": "panoseti-fern",
-      "enabled": true,
+      "present": true,
       "required": false,
       "ssh_user": "panoseti",
       "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
@@ -149,11 +152,12 @@
       "ctrl_addr": "10.200.146.1:50051",
       "verbosity": 2,
       "bodnar": {
-        "enabled": true,
+        "present": true,
         "required": false,
         "repo": "/home/panoseti/Codebase/lbe1420_panoseti",
         "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
         "configure_script": "lbe-1420-conf.py",
+        "out1_enabled": true,
         "frequency_hz": 10000000,
         "gnss": "recommended"
       }
@@ -162,7 +166,7 @@
     "gattini": {
       "daq_name": "GATTINI",
       "host": "panoseti-gattini",
-      "enabled": true,
+      "present": true,
       "required": false,
       "ssh_user": "panoseti",
       "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
@@ -175,11 +179,12 @@
       "ctrl_addr": "10.200.146.1:50051",
       "verbosity": 2,
       "bodnar": {
-        "enabled": false,
+        "present": false,
         "required": false,
         "repo": "/home/panoseti/lbe1420_panoseti",
         "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
         "configure_script": "lbe-1420-conf.py",
+        "out1_enabled": false,
         "frequency_hz": 10000000,
         "gnss": "recommended"
       }

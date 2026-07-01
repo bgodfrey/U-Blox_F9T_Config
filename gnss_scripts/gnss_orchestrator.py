@@ -112,6 +112,16 @@ def _str_bool(value: Any) -> bool:
     return bool(value)
 
 
+def _present(item: dict[str, Any], default: bool = True) -> bool:
+    """Return whether a config item is present, with legacy enabled fallback."""
+
+    if "present" in item:
+        return _str_bool(item["present"])
+    if "enabled" in item:
+        return _str_bool(item["enabled"])
+    return default
+
+
 def _merge(defaults: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
     """Merge a config item with shared defaults.
 
@@ -655,7 +665,7 @@ def _node_status(
     """
 
     node = _merge(defaults, raw_node)
-    enabled = _str_bool(node.get("enabled", True))
+    present = _present(node, True)
 
     # Resolve the paths that future start/stop commands will use. The status
     # command reports these resolved values so config mistakes are easy to spot.
@@ -665,7 +675,7 @@ def _node_status(
     logdir = _resolve_under_repo(repo, str(node.get("logdir", "logging"))) if repo else ""
     telem_dir = _resolve_under_repo(repo, str(node.get("telem_dir", "telem"))) if repo else ""
     bodnar = _bodnar_config(defaults, node)
-    bodnar_enabled = _str_bool(bodnar.get("enabled", False))
+    bodnar_present = _present(bodnar, False)
     bodnar_paths = _bodnar_paths(defaults, node)
 
     # These fields are the minimum needed to start an agent in the future:
@@ -693,24 +703,24 @@ def _node_status(
     gnss_detected: bool | None = None
     bodnar_detected: bool | None = None
     register_verify_report: dict[str, Any] | None = None
-    if check_bodnar and bodnar_enabled:
+    if check_bodnar and bodnar_present:
         checks.extend(
             _check_required_fields(
                 f"nodes.{key}.bodnar",
                 bodnar,
-                ["repo", "python", "configure_script", "frequency_hz", "gnss"],
+                ["repo", "python", "configure_script", "out1_enabled", "frequency_hz", "gnss"],
             )
         )
     elif check_bodnar:
-        checks.append(Check("bodnar enabled", True, "disabled"))
+        checks.append(Check("bodnar present", True, "not present"))
 
-    if not enabled:
-        checks.append(Check("node enabled", True, "disabled; remote checks skipped"))
+    if not present:
+        checks.append(Check("node present", True, "not present; remote checks skipped"))
     elif local_only:
         # Local-only mode is useful during config editing and CI because it does
         # not require network access or SSH keys.
         checks.append(Check("remote checks", True, "skipped by --local-only"))
-        if check_bodnar and bodnar_enabled:
+        if check_bodnar and bodnar_present:
             checks.append(Check("bodnar remote checks", True, "skipped by --local-only"))
     else:
         # First prove SSH works. If it does not, the remaining remote path checks
@@ -734,7 +744,7 @@ def _node_status(
             remote_checks, gnss_detected = _parse_remote_preflight(preflight_result)
             checks.extend(remote_checks)
 
-            if check_bodnar and bodnar_enabled:
+            if check_bodnar and bodnar_present:
                 bodnar_script = _remote_bodnar_status_script(
                     bodnar_paths,
                     float(bodnar.get("timeout_sec", 20.0)),
@@ -758,7 +768,7 @@ def _node_status(
         "key": key,
         "daq_name": node.get("daq_name", key),
         "host": node.get("host", key),
-        "enabled": enabled,
+        "present": present,
         "required": _str_bool(node.get("required", False)),
         "gnss_detected": gnss_detected,
         "bodnar_detected": bodnar_detected,
@@ -774,11 +784,12 @@ def _node_status(
             "ctrl_addr": node.get("ctrl_addr"),
             "verbosity": node.get("verbosity"),
             "bodnar": {
-                "enabled": bodnar_enabled,
+                "present": bodnar_present,
                 "required": _str_bool(bodnar.get("required", False)),
                 "python": bodnar_paths["python"],
                 "repo": bodnar_paths["repo"],
                 "configure_script": bodnar_paths["script"],
+                "out1_enabled": bodnar.get("out1_enabled"),
                 "frequency_hz": bodnar.get("frequency_hz"),
                 "gnss": bodnar.get("gnss"),
             },
@@ -826,8 +837,8 @@ def status_gnss(
         # Let users filter by inventory key, SSH host, or DAQ/display name.
         if selected and key not in selected and node.get("host") not in selected and node.get("daq_name") not in selected:
             continue
-        enabled = _str_bool(_merge(defaults, node).get("enabled", True))
-        if not enabled and not include_disabled:
+        present = _present(_merge(defaults, node), True)
+        if not present and not include_disabled:
             continue
         results.append(
             _node_status(
@@ -861,7 +872,7 @@ def _selected_node_items(
         if selected and key not in selected and raw_node.get("host") not in selected and raw_node.get("daq_name") not in selected:
             continue
         node = _merge(defaults, raw_node)
-        if not _str_bool(node.get("enabled", True)) and not include_disabled:
+        if not _present(node, True) and not include_disabled:
             continue
         out.append((key, raw_node))
     return out
@@ -1087,8 +1098,11 @@ def _bodnar_configure_script(paths: dict[str, str], bodnar: dict[str, Any]) -> s
     """Build a remote script that configures a Leo Bodnar LBE-1420."""
 
     commands = ["set -e", f"cd {shlex.quote(paths['repo'])}"]
+    out1_enabled = bodnar.get("out1_enabled")
     frequency = bodnar.get("frequency_hz")
     gnss = bodnar.get("gnss")
+    if out1_enabled is not None:
+        commands.append(_shell_join([paths["python"], paths["script"], "--enable", 1 if _str_bool(out1_enabled) else 0]))
     if frequency is not None and frequency != "":
         commands.append(_shell_join([paths["python"], paths["script"], "--f1", frequency]))
     if gnss:
@@ -1109,23 +1123,25 @@ def _configure_bodnar(
     node = _merge(defaults, raw_node)
     bodnar = _bodnar_config(defaults, node)
     paths = _bodnar_paths(defaults, node)
-    enabled = _str_bool(bodnar.get("enabled", False))
+    present = _present(bodnar, False)
     required = _str_bool(bodnar.get("required", False))
     daq_name = str(node.get("daq_name", key))
     host = str(node.get("host", key))
 
     script = _bodnar_configure_script(paths, bodnar)
     command = _shell_join(_ssh_base(node) + ["bash -c " + shlex.quote(script)])
-    detail = f"{bodnar.get('frequency_hz')} Hz, gnss={bodnar.get('gnss')}"
+    out1 = bodnar.get("out1_enabled")
+    out1_detail = f", out1={'on' if _str_bool(out1) else 'off'}" if out1 is not None else ""
+    detail = f"{bodnar.get('frequency_hz')} Hz, gnss={bodnar.get('gnss')}{out1_detail}"
 
-    if not enabled:
+    if not present:
         return StartResult(
             kind="bodnar",
             key=key,
             daq_name=daq_name,
             host=host,
             status="skipped",
-            detail="Bodnar disabled",
+            detail="Bodnar not present",
             required=required,
             command=command,
             script=script,
@@ -1619,7 +1635,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     status.add_argument("--node", action="append", default=[], help="limit status to a node key, host, or DAQ name")
     status.add_argument("--mode", choices=["differential", "absolute"], default="differential", help="GNSS timing mode for register verification")
     status.add_argument("--verify-registers", action="store_true", help="read receiver CFG registers and compare against the selected manifest")
-    status.add_argument("--include-disabled", action="store_true", help="include disabled nodes")
+    status.add_argument("--include-disabled", action="store_true", help="include nodes marked present=false")
     status.add_argument("--local-only", action="store_true", help="skip SSH and remote checks")
     status.add_argument("--json", action="store_true", help="emit machine-readable JSON")
 
@@ -1627,13 +1643,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     start.add_argument("--node", action="append", default=[], help="limit start to a node key, host, or DAQ name")
     start.add_argument("--mode", choices=["differential", "absolute"], default="differential", help="GNSS timing mode")
     start.add_argument("--bodnar", action="store_true", help="configure Leo Bodnar LBE-1420 devices before starting agents")
-    start.add_argument("--include-disabled", action="store_true", help="include disabled nodes")
+    start.add_argument("--include-disabled", action="store_true", help="include nodes marked present=false")
     start.add_argument("--dry-run", action="store_true", help="show launch commands without running them")
     start.add_argument("--json", action="store_true", help="emit machine-readable JSON")
 
     stop = sub.add_parser("stop", help="stop selected GNSS agents and optionally the server")
     stop.add_argument("--node", action="append", default=[], help="limit stop to a node key, host, or DAQ name")
-    stop.add_argument("--include-disabled", action="store_true", help="include disabled nodes")
+    stop.add_argument("--include-disabled", action="store_true", help="include nodes marked present=false")
     stop.add_argument("--server-only", action="store_true", help="stop only the local GNSS server")
     stop.add_argument("--agents-only", action="store_true", help="stop agents without stopping the local GNSS server")
     stop.add_argument("--dry-run", action="store_true", help="show stop commands without running them")

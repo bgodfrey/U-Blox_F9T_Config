@@ -28,7 +28,7 @@ reference setup. Bodnar configuration is optional and is enabled explicitly with
 
 Run these commands from the repo or from `gnss_scripts/`.
 
-Check all enabled nodes:
+Check all present nodes:
 
 ```bash
 python gnss_orchestrator.py status
@@ -58,13 +58,13 @@ Preview a start without changing anything:
 python gnss_orchestrator.py start --dry-run
 ```
 
-Start the server and all enabled agents in differential mode:
+Start the server and all present agents in differential mode:
 
 ```bash
 python gnss_orchestrator.py start --mode differential
 ```
 
-Start the server and all enabled agents in absolute timing mode:
+Start the server and all present agents in absolute timing mode:
 
 ```bash
 python gnss_orchestrator.py start --mode absolute
@@ -227,11 +227,12 @@ The `defaults` section includes common values such as:
   "telem_dir": "telem",
   "find_ublox_script": "gnss_scripts/find_ublox.sh",
   "bodnar": {
-    "enabled": true,
+    "present": true,
     "required": false,
     "repo": "/home/panoseti/lbe1420_panoseti",
     "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
     "configure_script": "lbe-1420-conf.py",
+    "out1_enabled": true,
     "frequency_hz": 10000000,
     "gnss": "recommended"
   },
@@ -320,7 +321,7 @@ Example:
 "winters": {
   "daq_name": "WINTERS",
   "host": "panoseti-winter",
-  "enabled": true,
+  "present": true,
   "required": false,
   "ssh_user": "panoseti",
   "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
@@ -333,11 +334,12 @@ Example:
   "ctrl_addr": "10.200.146.1:50051",
   "verbosity": 2,
   "bodnar": {
-    "enabled": true,
+    "present": true,
     "required": false,
     "repo": "/home/panoseti/lbe1420_panoseti",
     "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
     "configure_script": "lbe-1420-conf.py",
+    "out1_enabled": true,
     "frequency_hz": 10000000,
     "gnss": "recommended"
   }
@@ -349,7 +351,7 @@ Important fields:
 - Node key, for example `winters`: short inventory key used by `--node`.
 - `daq_name`: display name, for example `WINTERS`.
 - `host`: SSH hostname, for example `panoseti-winter`.
-- `enabled`: whether the node is included by default.
+- `present`: whether the node is included by default.
 - `required`: whether status failures should make the CLI exit nonzero.
 - `ssh_user`: SSH user for remote commands.
 - `python`: full path to the Python executable/environment on that node.
@@ -384,11 +386,12 @@ Each node can include a `bodnar` block:
 
 ```json5
 "bodnar": {
-  "enabled": true,
+  "present": true,
   "required": false,
   "repo": "/home/panoseti/lbe1420_panoseti",
   "python": "/home/panoseti/miniconda3/envs/pygnss_312/bin/python",
   "configure_script": "lbe-1420-conf.py",
+  "out1_enabled": true,
   "frequency_hz": 10000000,
   "gnss": "recommended"
 }
@@ -396,13 +399,16 @@ Each node can include a `bodnar` block:
 
 Fields:
 
-- `enabled`: whether this node should include Bodnar status/configuration.
+- `present`: whether this node should include Bodnar status/configuration.
 - `required`: whether a Bodnar failure should block a `start --bodnar` node
   launch.
 - `repo`: location of the `lbe1420_panoseti` repo on that node.
 - `python`: Python executable/environment used to run the Bodnar script.
 - `configure_script`: Bodnar configuration script, usually
   `lbe-1420-conf.py`.
+- `out1_enabled`: desired OUT1 output state. When true, `start --bodnar` runs
+  `lbe-1420-conf.py --enable 1`; when false, it runs
+  `lbe-1420-conf.py --enable 0`.
 - `frequency_hz`: output frequency for OUT1. For the current 10 MHz stopgap,
   this is `10000000`.
 - `gnss`: constellation setting passed to `lbe-1420-conf.py --gnss`.
@@ -434,14 +440,14 @@ What it checks:
 - Server repo exists.
 - Server script exists.
 - Server log directory parent exists.
-- Each enabled node can be reached by SSH.
+- Each present node can be reached by SSH.
 - Each node's Python executable exists and is executable.
 - Each node's repo exists.
 - Each node's `agent_v1.py` exists.
 - Each node's `find_ublox.sh` exists and is executable.
 - Log/telemetry parent directories exist.
 - A u-blox GNSS receiver can be detected.
-- If Bodnar is enabled, the Bodnar repo/script/Python paths exist and the
+- If Bodnar is present, the Bodnar repo/script/Python paths exist and the
   device can be queried with `lbe-1420-conf.py --status`.
 - Optionally, receiver registers match the selected manifest.
 
@@ -479,7 +485,7 @@ python gnss_orchestrator.py status --json
 
 ### Bodnar Status
 
-If `bodnar.enabled` is true for a node, normal `status` includes Bodnar checks:
+If `bodnar.present` is true for a node, normal `status` includes Bodnar checks:
 
 ```text
 OK   bodnar python executable -- /home/panoseti/miniconda3/envs/pygnss_312/bin/python
@@ -653,19 +659,20 @@ For each selected node, the orchestrator:
 8. If launch fails, it prints recent log output to help diagnose the failure.
 
 If `--bodnar` is used, the orchestrator also configures each selected node's
-enabled Bodnar before starting that node's GNSS agent.
+present Bodnar before starting that node's GNSS agent.
 
 For each selected Bodnar, the orchestrator:
 
 1. SSHs to the node.
 2. Checks the configured Bodnar Python executable, repo, and script.
 3. Runs `lbe-1420-conf.py --status` as a preflight/device-access check.
-4. Runs `lbe-1420-conf.py --f1 <frequency_hz>`.
-5. Runs `lbe-1420-conf.py --gnss <gnss>`.
-6. Runs `lbe-1420-conf.py --status` again after configuration.
+4. Runs `lbe-1420-conf.py --enable 1` or `--enable 0` if `out1_enabled` is set.
+5. Runs `lbe-1420-conf.py --f1 <frequency_hz>`.
+6. Runs `lbe-1420-conf.py --gnss <gnss>`.
+7. Runs `lbe-1420-conf.py --status` again after configuration.
 
 The frequency and GNSS commands are separate because `lbe-1420-conf.py` treats
-`--f1`, `--gnss`, and `--status` as mutually exclusive options.
+`--enable`, `--f1`, `--gnss`, and `--status` as mutually exclusive options.
 
 This means running `start` again is a restart for the selected processes. It
 will stop the existing matching `screen` session and launch a new one.
@@ -678,13 +685,13 @@ Preview all launch commands without running them:
 python gnss_orchestrator.py start --dry-run
 ```
 
-Start all enabled nodes in differential mode:
+Start all present nodes in differential mode:
 
 ```bash
 python gnss_orchestrator.py start --mode differential
 ```
 
-Start all enabled nodes in absolute mode:
+Start all present nodes in absolute mode:
 
 ```bash
 python gnss_orchestrator.py start --mode absolute
@@ -708,7 +715,7 @@ Start only WINTERS in absolute mode:
 python gnss_orchestrator.py start --node WINTERS --mode absolute
 ```
 
-Configure Bodnars and start all enabled nodes in differential mode:
+Configure Bodnars and start all present nodes in differential mode:
 
 ```bash
 python gnss_orchestrator.py start --mode differential --bodnar
@@ -756,6 +763,7 @@ dry-run  bodnar winters      WINTERS            host=panoseti-winter
   remote script:
     set -e
     cd /home/panoseti/lbe1420_panoseti
+    /home/panoseti/miniconda3/envs/pygnss_312/bin/python /home/panoseti/lbe1420_panoseti/lbe-1420-conf.py --enable 1
     /home/panoseti/miniconda3/envs/pygnss_312/bin/python /home/panoseti/lbe1420_panoseti/lbe-1420-conf.py --f1 10000000
     /home/panoseti/miniconda3/envs/pygnss_312/bin/python /home/panoseti/lbe1420_panoseti/lbe-1420-conf.py --gnss recommended
     /home/panoseti/miniconda3/envs/pygnss_312/bin/python /home/panoseti/lbe1420_panoseti/lbe-1420-conf.py --status
@@ -1230,15 +1238,15 @@ Use timestamps or clear/archive logs manually if needed.
 ## Safety Notes
 
 - `status` is read-only.
-- `status` may run `lbe-1420-conf.py --status` for enabled Bodnars, which is a
+- `status` may run `lbe-1420-conf.py --status` for present Bodnars, which is a
   read-only device query.
 - `status --verify-registers` polls receiver registers but does not write them.
 - `start --dry-run` is read-only.
 - `stop --dry-run` is read-only.
 - `start` restarts matching `screen` sessions before launching new ones.
-- `start --bodnar` writes Bodnar settings by running `lbe-1420-conf.py --f1`
-  and `lbe-1420-conf.py --gnss` before launching each selected node's GNSS
-  agent.
+- `start --bodnar` writes Bodnar settings by running `lbe-1420-conf.py --enable`,
+  `lbe-1420-conf.py --f1`, and `lbe-1420-conf.py --gnss` before launching each
+  selected node's GNSS agent.
 - `stop --node NODE` stops only that node's agent.
 - `stop` without `--node` stops all selected agents and the server.
 
