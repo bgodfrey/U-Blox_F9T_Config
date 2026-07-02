@@ -1156,7 +1156,6 @@ def _bodnar_configure_script(paths: dict[str, str], bodnar: dict[str, Any]) -> s
         commands.append(_shell_join([paths["python"], paths["script"], "--f1", frequency]))
     if gnss:
         commands.append(_shell_join([paths["python"], paths["script"], "--gnss", gnss]))
-    commands.append(_shell_join([paths["python"], paths["script"], "--status"]))
     return "\n".join(commands)
 
 
@@ -1196,7 +1195,6 @@ def _configure_bodnar(
             script=script,
         )
 
-    preflight_script = _remote_bodnar_status_script(paths, float(bodnar.get("timeout_sec", 20.0)))
     if dry_run:
         return StartResult(
             kind="bodnar",
@@ -1219,23 +1217,6 @@ def _configure_bodnar(
             host=host,
             status="failed",
             detail="ssh unreachable: " + _format_cmd_result(ssh_result),
-            required=required,
-            command=command,
-            script=script,
-        )
-
-    preflight_result = _remote_run(node, preflight_script, timeout=float(bodnar.get("timeout_sec", 20.0)) + 10.0)
-    preflight_checks, detected = _parse_bodnar_status(preflight_result)
-    if detected is not True or not all(check.ok for check in preflight_checks):
-        failed = next((check for check in preflight_checks if not check.ok), None)
-        reason = failed.detail if failed else _format_cmd_result(preflight_result)
-        return StartResult(
-            kind="bodnar",
-            key=key,
-            daq_name=daq_name,
-            host=host,
-            status="failed",
-            detail=f"Bodnar preflight failed: {reason}",
             required=required,
             command=command,
             script=script,

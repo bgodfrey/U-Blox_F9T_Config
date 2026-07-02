@@ -671,14 +671,14 @@ For each selected Bodnar, the orchestrator:
 
 1. SSHs to the node.
 2. Checks the configured Bodnar Python executable, repo, and script.
-3. Runs `lbe-1420-conf.py --status` as a preflight/device-access check.
-4. Runs `lbe-1420-conf.py --enable 1` or `--enable 0` if `out1_enabled` is set.
-5. Runs `lbe-1420-conf.py --f1 <frequency_hz>`.
-6. Runs `lbe-1420-conf.py --gnss <gnss>`.
-7. Runs `lbe-1420-conf.py --status` again after configuration.
+3. Runs `lbe-1420-conf.py --enable 1` or `--enable 0` if `out1_enabled` is set.
+4. Runs `lbe-1420-conf.py --f1 <frequency_hz>`.
+5. Runs `lbe-1420-conf.py --gnss <gnss>`.
 
 The frequency and GNSS commands are separate because `lbe-1420-conf.py` treats
 `--enable`, `--f1`, `--gnss`, and `--status` as mutually exclusive options.
+`start --bodnar` does not run `lbe-1420-conf.py --status`; use the orchestrator
+`status` command for Bodnar health summaries.
 
 This means running `start` again is a restart for the selected processes. It
 will stop the existing matching `screen` session and launch a new one.
@@ -773,7 +773,6 @@ dry-run  bodnar winters      WINTERS            host=panoseti-winter
     /home/panoseti/miniconda3/envs/pygnss_312/bin/python /home/panoseti/lbe1420_panoseti/lbe-1420-conf.py --enable 1
     /home/panoseti/miniconda3/envs/pygnss_312/bin/python /home/panoseti/lbe1420_panoseti/lbe-1420-conf.py --f1 10000000
     /home/panoseti/miniconda3/envs/pygnss_312/bin/python /home/panoseti/lbe1420_panoseti/lbe-1420-conf.py --gnss recommended
-    /home/panoseti/miniconda3/envs/pygnss_312/bin/python /home/panoseti/lbe1420_panoseti/lbe-1420-conf.py --status
 ```
 
 Successful real output looks like:
