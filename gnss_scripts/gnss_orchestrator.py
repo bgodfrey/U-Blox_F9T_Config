@@ -317,7 +317,7 @@ def _remote_preflight_script(paths: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
-def _remote_register_verify_script(node: dict[str, Any], manifest_path: str, role: str | None) -> str:
+def _remote_register_verify_script(node: dict[str, Any], manifest_path: str, role: str | None, port: str | None = None) -> str:
     """Build a remote command that verifies manifest registers."""
 
     repo = str(node["repo"])
@@ -329,6 +329,8 @@ def _remote_register_verify_script(node: dict[str, Any], manifest_path: str, rol
         manifest_path,
         "--json",
     ]
+    if port:
+        args.extend(["--port", port])
     if role:
         args.extend(["--role", role])
     return "\n".join(
@@ -388,14 +390,15 @@ def _remote_bodnar_status_script(paths: dict[str, str], timeout_sec: float) -> s
     return "\n".join(lines)
 
 
-def _parse_remote_preflight(result: CommandResult) -> tuple[list[Check], bool | None]:
+def _parse_remote_preflight(result: CommandResult) -> tuple[list[Check], bool | None, str | None]:
     """Parse remote preflight output into checks and GNSS detection state."""
 
     checks: list[Check] = []
     gnss_detected: bool | None = None
+    gnss_port: str | None = None
     if result.returncode != 0:
         checks.append(Check("remote preflight", False, _format_cmd_result(result)))
-        return checks, gnss_detected
+        return checks, gnss_detected, gnss_port
 
     for line in result.stdout.splitlines():
         parts = line.split("\t", 3)
@@ -411,11 +414,15 @@ def _parse_remote_preflight(result: CommandResult) -> tuple[list[Check], bool | 
         elif kind == "GNSS":
             detail = parts[2]
             gnss_detected = status == "OK"
+            if gnss_detected:
+                candidate = detail.split(maxsplit=1)[0] if detail else ""
+                if candidate.startswith("/dev/"):
+                    gnss_port = candidate
             checks.append(Check("gnss receiver detected", gnss_detected, detail))
         else:
             checks.append(Check("remote preflight output", False, line))
 
-    return checks, gnss_detected
+    return checks, gnss_detected, gnss_port
 
 
 def _summarize_bodnar_status(detail: str) -> str:
@@ -425,6 +432,10 @@ def _summarize_bodnar_status(detail: str) -> str:
         return detail
 
     fields: list[str] = []
+    cno_matches = [
+        (int(count), int(best), int(avg))
+        for count, best, avg in re.findall(r"(\d+)\s+sats,\s*C/N0 best\s+(\d+)\s*/\s*avg\s+(\d+)", detail)
+    ]
     patterns = [
         ("fix", r"fix:\s*([^;]+)"),
         ("satellites", r"satellites:\s*([^;]+)"),
@@ -437,6 +448,11 @@ def _summarize_bodnar_status(detail: str) -> str:
         match = re.search(pattern, detail)
         if match:
             fields.append(f"{label} {match.group(1).strip()}")
+        if label == "satellites" and cno_matches:
+            best = max(match[1] for match in cno_matches)
+            total_sats = sum(match[0] for match in cno_matches)
+            weighted_avg = round(sum(count * avg for count, _, avg in cno_matches) / total_sats) if total_sats else 0
+            fields.append(f"C/N0 best {best} / avg {weighted_avg} dB-Hz")
 
     return "; ".join(fields) if fields else detail[:240]
 
@@ -745,6 +761,7 @@ def _node_status(
     )
 
     gnss_detected: bool | None = None
+    gnss_port: str | None = None
     bodnar_detected: bool | None = None
     register_verify_report: dict[str, Any] | None = None
     if check_bodnar and bodnar_present:
@@ -785,7 +802,7 @@ def _node_status(
                 }
             )
             preflight_result = _remote_run(node, preflight_script, timeout=20.0)
-            remote_checks, gnss_detected = _parse_remote_preflight(preflight_result)
+            remote_checks, gnss_detected, gnss_port = _parse_remote_preflight(preflight_result)
             checks.extend(remote_checks)
 
             if check_bodnar and bodnar_present:
@@ -802,7 +819,7 @@ def _node_status(
                 manifest = str(settings.get("receiver_manifest") or "manifest_f9t.json5")
                 manifest_path = _resolve_under_repo(repo, manifest)
                 role = "timing_only" if settings.get("timing_mode") == "absolute" else None
-                verify_script = _remote_register_verify_script(node, manifest_path, role)
+                verify_script = _remote_register_verify_script(node, manifest_path, role, gnss_port)
                 verify_result = _remote_run(node, verify_script, timeout=90.0)
                 verify_check, register_verify_report = _parse_register_verify(verify_result)
                 checks.append(verify_check)
@@ -815,6 +832,7 @@ def _node_status(
         "present": present,
         "required": _str_bool(node.get("required", False)),
         "gnss_detected": gnss_detected,
+        "gnss_port": gnss_port,
         "bodnar_detected": bodnar_detected,
         "checks": checks,
         "resolved": {

@@ -493,7 +493,7 @@ If `bodnar.present` is true for a node, normal `status` includes Bodnar checks:
 OK   bodnar python executable -- /home/panoseti/miniconda3/envs/pygnss_312/bin/python
 OK   bodnar repo directory -- /home/panoseti/lbe1420_panoseti
 OK   bodnar configure script -- /home/panoseti/lbe1420_panoseti/lbe-1420-conf.py
-OK   bodnar detected -- fix 3D fix (valid); satellites 12 used / 34 in view; GPS lock yes; PLL lock yes; antenna OK; OUT1 10000000 Hz
+OK   bodnar detected -- fix 3D fix (valid); satellites 12 used / 34 in view; C/N0 best 51 / avg 42 dB-Hz; GPS lock yes; PLL lock yes; antenna OK; OUT1 10000000 Hz
 ```
 
 The human output intentionally summarizes the Bodnar status. It reports the
@@ -501,6 +501,7 @@ operational facts needed for a quick health check:
 
 - GNSS fix state
 - satellite count
+- C/N0 best/average
 - GPS lock
 - PLL lock
 - antenna state
