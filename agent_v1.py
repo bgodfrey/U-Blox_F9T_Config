@@ -59,6 +59,7 @@ _CONTROL_HANDSHAKE_TIMEOUT_S = 20.0
 HEX10 = re.compile(r"[0-9A-F]{10}$")
 PRINT_RTCM_IDS = True              # Print RTCM message IDs as they pass
 PRINT_UBX_SUMMARY = True           # Print UBX class/id summaries
+PUBLISH_FRAME_LOG_INTERVAL = 100   # Info log cadence for BASE RTCM uploads
 
 # GNSS protocol bitmasks (for CFG‑PRT)
 UBX_PROTO_UBX   = 0x01
@@ -140,7 +141,7 @@ async def cancel_and_wait(task: Optional[asyncio.Task]) -> None:
 	if not task:
 		return
 	task.cancel()
-	with contextlib.suppress(asyncio.CancelledError):
+	with contextlib.suppress(asyncio.CancelledError, BrokenPipeError):
 		await task
 
 # ----------------------------------------------------------------------------
@@ -1213,6 +1214,7 @@ async def publish_loop(ser, ser_lock, mount, token, rtcm_q=None):
 	closing = False             # whether we should half-close and await the server acknolwedgement 
 	call = None                 # gRPC stream object (await-able for the final acknowledgement)
 	exit_reason = 'running'     # human-friendly reason printed on exit
+	frames_pushed = 0           # BASE-side count of RTCM frames written upstream
 	try:
 		# Create a channel with keepalive so the server can detect dead peers and vice-versa.
 		
@@ -1234,7 +1236,6 @@ async def publish_loop(ser, ser_lock, mount, token, rtcm_q=None):
 				closing = True
 				return
 
-			seq = 0  # monotonically increasing sequence number for visibility/debug
 			while True:
 				# 3) Main loop: drain RTCM frames from the queue and forward to server
 				try:
@@ -1258,8 +1259,10 @@ async def publish_loop(ser, ser_lock, mount, token, rtcm_q=None):
 				
 				try:
 					# Forward one RTCM frame to the server. Attach a locally-generated seq and millisecond timestamp for debugging.
-					await call.write(pb.PublishMsg(frame=pb.RtcmFrame(data=frame, seq=seq, unix_ms=int(time.time()*1000))))
-					seq += 1
+					await call.write(pb.PublishMsg(frame=pb.RtcmFrame(data=frame, seq=frames_pushed, unix_ms=int(time.time()*1000))))
+					frames_pushed += 1
+					if PUBLISH_FRAME_LOG_INTERVAL and (frames_pushed % PUBLISH_FRAME_LOG_INTERVAL) == 0:
+						log.info("[publish] pushed %d RTCM frames", frames_pushed)
 				except grpc.aio.AioRpcError as e:
 					# Mid-stream write failed — capture code and exit.
 					exit_reason = f"frame_write_error:{e.code().name}"
@@ -1280,7 +1283,7 @@ async def publish_loop(ser, ser_lock, mount, token, rtcm_q=None):
 		log.exception("[publish] stream error: %s", e)
 	finally:
 		# 4) Print a single-line reason every time the loop ends (good logging).
-		log.info("[publish] exit reason: %s", exit_reason)
+		log.info("[publish] exit reason: %s; pushed_frames=%d", exit_reason, frames_pushed)
 		
 		# On a normal/known-close path, half-close the stream and await final acknowledgement.
 		if closing and call is not None:
