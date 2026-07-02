@@ -481,10 +481,10 @@ class ControlServicer(rpc.ControlServicer):
 							# Normalize device_id (upper-case, no surrounding whitespace); used as dict key
 							device_id = (h.device_id or "").strip().upper()
 							log.info("[server] Control.Pipe: HELLO %s", device_id)
-							
+
 							# Update a global "last seen" map (ms since epoch) for observability/health checks
 							LAST_SEEN[device_id] = time.time()*1000 	
-							
+
 							# Load manifest off the event loop to avoid blocking asyncio receive thread
 							# (Path.read_text with encoding is CPU+IO-bound; to_thread keeps loop snappy)
 							text = await asyncio.to_thread(
@@ -494,7 +494,7 @@ class ControlServicer(rpc.ControlServicer):
 
 							# Decide role/mount/token/alias for this device using manifest + defaults
 							role_enum, mount, token, alias = decide_role_and_creds_for_device(man, device_id, self.timing_mode)
-							
+
 							# Send hello acknowledgement to the agent with role/mount and config version
 							# (This unblocks the agent to configure its publish/subscribe and behavior.)
 							await out_q.put(pb.ControlMsg(ack=pb.HelloAck(
@@ -532,21 +532,21 @@ class ControlServicer(rpc.ControlServicer):
 									try:
 										# Derive target config: merge global/role/device layers + TMODE if LLH present
 										layers, items = await cfg_from_manifest_for_device(man, device_id, role_enum)
-										
+
 										# Chunk the config to keep each CfgSet message bounded (e.g., 64 items)
 										for i in range(0, len(items), 64):
 											chunk = items[i:i + 64]
 											cfgvals = build_cfgvals(chunk)
-											
+
 											# Send a CfgSet request to the GNSS receiver
 											await out_q.put(pb.ControlMsg(cfgset=pb.CfgSet(
 												items=cfgvals, apply_to_layers=layers, verify_layer = verify_layer, version=cfg_version
 											)))
 
-											
+
 											# Yield so the TX task can run and move data out promptly
 											await asyncio.sleep(0)  # let tx run
-										
+
 										# Mark success for this device/version so we don't re-push
 										PUSHED_CFG[device_id] = cfg_version
 										log.info("[server] Control.Pipe: pushed cfg v%s to %s", cfg_version, device_id)
@@ -570,11 +570,24 @@ class ControlServicer(rpc.ControlServicer):
 						elif m.HasField("telem"):
 							# --- TELEMETRY: status/health snapshot from agent/GNSS ---
 							t = m.telem
+							has_freshness = any((
+								bool(getattr(t, "qerr_age_ms", 0)),
+								bool(getattr(t, "nav_sat_age_ms", 0)),
+								bool(getattr(t, "qerr_valid", False)),
+								bool(getattr(t, "nav_sat_valid", False)),
+								bool(getattr(t, "telemetry_stale", False)),
+							))
+							qerr_valid = bool(getattr(t, "qerr_valid", False)) if has_freshness else True
 							# Build a dictionary with types normalized (int/float/bool)
 							rec = {
 								"unix_ms": int(getattr(t, "unix_ms", 0)),
 								"temp_c": float(getattr(t, "temp_c", 0.0)),
-								"qerr_ns": round(float(getattr(t, "qerr_ns", 0)),3),
+								"qerr_ns": round(float(getattr(t, "qerr_ns", 0)), 3) if qerr_valid else None,
+								"qerr_valid": qerr_valid,
+								"qerr_age_ms": int(getattr(t, "qerr_age_ms", 0)),
+								"nav_sat_valid": bool(getattr(t, "nav_sat_valid", False)) if has_freshness else True,
+								"nav_sat_age_ms": int(getattr(t, "nav_sat_age_ms", 0)),
+								"telemetry_stale": bool(getattr(t, "telemetry_stale", False)) if has_freshness else False,
 								"utc_ok": bool(getattr(t, "utc_ok", False)),
 								"num_vis": int(getattr(t, "num_vis", 0)),
 								"num_used": int(getattr(t, "num_used", 0)),
@@ -582,9 +595,9 @@ class ControlServicer(rpc.ControlServicer):
 								"gal_used": int(getattr(t, "gal_used", 0)),
 								"bds_used": int(getattr(t, "bds_used", 0)),
 								"glo_used": int(getattr(t, "glo_used", 0)),
-								"avg_cno": round(float(getattr(t, "avg_cno", 0.0)),4),
-								"pdop": round(float(getattr(t, "pdop", 0.0)),4),
-							}							
+								"avg_cno": round(float(getattr(t, "avg_cno", 0.0)), 4),
+								"pdop": round(float(getattr(t, "pdop", 0.0)), 4),
+							}
 							# Update in-memory cache and append a JSONL log row (if we know which device)
 							if device_id:
 								# --- enqueue for telemetry service forwarding (best-effort) ---
@@ -594,7 +607,6 @@ class ControlServicer(rpc.ControlServicer):
 									"alias": alias,
 									**rec,   # unix_ms,temp_c,qerr_ns,utc_ok,num_vis,num_used,gps_used,...,pdop
 								}
-
 								LATEST_TELEM[device_id] = rec
 								#alias = getattr(m.ack, "alias", "") if hasattr(m, "ack") else ""
 								jlog("telem", device_id, alias = alias, **rec)
@@ -645,11 +657,11 @@ class ControlServicer(rpc.ControlServicer):
 				while True:
 					# Wait for the next outbound message from any producer.
 					msg = await out_q.get()
-					
+
 					# Sentinel protocol: None means "shut down the TX loop".
 					if msg is None:
 						break
-					
+
 					# Stream this message to the client. In gRPC AsyncIO, yield inside the handler’s async generator sends one message on the server→client stream.
 
 					yield msg
@@ -658,7 +670,7 @@ class ControlServicer(rpc.ControlServicer):
 				# Normal during shutdown (e.g., server stopping or client cancelling the call). Swallow to avoid noisy logs; gRPC will handle the cancellation semantics.
 				pass
 
-		
+
 		# Kick off the RX side (reader) as a background task; it will consume inbound messages from the agent and populate `out_q` with responses (ACKs, CfgSet, heartbeats, etc.).
 		rx_task = asyncio.create_task(rx())
 
@@ -673,7 +685,7 @@ class ControlServicer(rpc.ControlServicer):
 			# Stop the heartbeat task if it was started. Suppress exceptions so shutdown is clean.
 				with contextlib.suppress(Exception):
 					hb_task.cancel(); await hb_task
-			
+
 			# Stop the RX loop task. It normally exits after we send the sentinel into the queue (done in rx()'s finally), but if we’re here for any reason, make sure it’s cancelled.
 
 			with contextlib.suppress(Exception):
@@ -685,7 +697,7 @@ class ControlServicer(rpc.ControlServicer):
 				# Milliseconds since we last saw any message tagged with this device_id
 				age = int(time.time() * 1000) - LAST_SEEN[device_id]
 				log.debug("age since last discovery %d ms", age)
-				
+
 				# If the age exceeds twice the heartbeat period, consider the connection stale. Clearing the PUSHED_CFG entry forces a re-push next time this device connects.
 
 				if age > 2 * HB_PERIOD_S * 1000:
@@ -717,7 +729,7 @@ async def serve(addr: str = "0.0.0.0:50051", timing_mode: str = "differential") 
 	install_signal_handlers(stop) # attach signal handlers to set `stop`
 
 	hub = Hub() # in-process fanout manager for RTCM frames
-	
+
 	# Configure gRPC AsyncIO server with keepalive settings suitable for long-lived streams.
 	#server = grpc.aio.server(options=[
 	#	("grpc.keepalive_time_ms", 20000),  # send HTTP/2 PING every 20s
@@ -733,7 +745,7 @@ async def serve(addr: str = "0.0.0.0:50051", timing_mode: str = "differential") 
 	server.add_insecure_port(addr)
 	print("listening on", addr)
 	log.info("listening on %s timing_mode=%s", addr, timing_mode)
-	
+
 	# Start accepting RPCs
 	await server.start()
 
@@ -741,10 +753,10 @@ async def serve(addr: str = "0.0.0.0:50051", timing_mode: str = "differential") 
 
 	# `wait_for_termination()` completes when the server stops for any reason.
 	wait_task = asyncio.create_task(server.wait_for_termination())
-	
+
 	# `stop.wait()` completes when SIGINT/SIGTERM arrives (see install_signal_handlers).
 	stop_task = asyncio.create_task(stop.wait())
-	
+
 	# Wait for whichever happens first: a stop signal or server termination
 	done, _ = await asyncio.wait({wait_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
 
@@ -754,7 +766,7 @@ async def serve(addr: str = "0.0.0.0:50051", timing_mode: str = "differential") 
 		log.info("shutdown requested, stopping gRPC…")
 		# Unblock any subscribers waiting on Hub queues; this helps active Subscribe RPCs finish.
 		await hub.shutdown()
-	
+
 		# Ask gRPC to stop accepting new calls and gracefully drain existing ones for up to 3s.
 		await server.stop(grace=3.0)
 
@@ -764,7 +776,7 @@ async def serve(addr: str = "0.0.0.0:50051", timing_mode: str = "differential") 
 			with contextlib.suppress(asyncio.CancelledError):
 				await _telem_fwd_task
 		'''
-	
+
 	# Await server termination task (ignore exceptions during final cleanup)
 	with contextlib.suppress(Exception):
 		await wait_task

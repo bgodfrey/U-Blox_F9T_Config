@@ -63,6 +63,13 @@ message Telemetry {
   uint32 glo_used = 10;  // gnssId=6
   float  avg_cno  = 11;  // mean C/N0 over all channels
   float  pdop     = 12;  // from NAV-DOP (scaled)
+
+  // --- telemetry freshness ---
+  uint32 qerr_age_ms = 13;     // age of the most recent UBX-TIM-TP update
+  uint32 nav_sat_age_ms = 14;  // age of the most recent UBX-NAV-SAT update
+  bool qerr_valid = 15;        // false if qerr is stale or has never arrived
+  bool nav_sat_valid = 16;     // false if NAV-SAT is stale or has never arrived
+  bool telemetry_stale = 17;   // true if any critical telemetry source is stale
 }
 
 message CfgVal {

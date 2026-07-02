@@ -69,6 +69,9 @@ UBX_PROTO_RTCM3 = 0x20
 SAVE_TELEM_LOCAL  = True          # write JSONL locally
 SAVE_TELEM_REMOTE = True          # send to server over Control.Pipe
 _VERBOSE_TELEM = False            # include extra local-only telemetry when -v 3
+QERR_STALE_MS = 3000              # qerr requires fresh UBX-TIM-TP at ~1 Hz
+NAV_SAT_STALE_MS = 10000          # satellite diagnostics are less critical
+TELEM_STALE_WARN_S = 30.0         # throttle stale telemetry warnings
 TELEM_DIR  = "./telem"  # or "/var/log/f9t_telem.jsonl"
 LOG_DIR = "./logging"
 
@@ -157,7 +160,10 @@ class TelemetryAgg:
 		"fix_type", "gnss_fix_ok", "diff_soln", "carr_soln",
 		"confirmed_date", "confirmed_time", "nav_pvt_num_sv", "nav_sat_top",
 		"nav_pvt_lat_deg", "nav_pvt_lon_deg", "nav_pvt_height_m",
-		"nav_pvt_hmsl_m", "nav_pvt_hacc_m", "nav_pvt_vacc_m"
+		"nav_pvt_hmsl_m", "nav_pvt_hacc_m", "nav_pvt_vacc_m",
+		"last_tim_tp_monotonic", "last_nav_sat_monotonic",
+		"last_mon_sys_monotonic", "last_nav_dop_monotonic",
+		"last_telem_stale_warning_monotonic"
 	)
 
 	def __init__(self) -> None:
@@ -187,6 +193,11 @@ class TelemetryAgg:
 		self.nav_pvt_hmsl_m = None
 		self.nav_pvt_hacc_m = None
 		self.nav_pvt_vacc_m = None
+		self.last_tim_tp_monotonic = None
+		self.last_nav_sat_monotonic = None
+		self.last_mon_sys_monotonic = None
+		self.last_nav_dop_monotonic = None
+		self.last_telem_stale_warning_monotonic = 0.0
 
 	#Turn bytes into stream and then returned the raw and parsed data
 	def feed_ubx(self, frame: bytes) -> None:
@@ -199,10 +210,12 @@ class TelemetryAgg:
 		if ident == "TIM-TP":
 			self.qerr_ps = getattr(msg, "qErr", None)
 			self.utc_ok = bool(getattr(msg, "utc", 0))
+			self.last_tim_tp_monotonic = time.monotonic()
 		elif ident == "MON-SYS":
 			tv = getattr(msg, "tempValue", None)
 			if tv is not None:
 				self.temp_c = float(tv)
+				self.last_mon_sys_monotonic = time.monotonic()
 		elif ident == "NAV-SAT":
 			# Count visible/used sats and per‑constellation split; compute avg C/N0.
 			
@@ -283,11 +296,13 @@ class TelemetryAgg:
 			self.gps_used, self.gal_used, self.bds_used, self.glo_used = gps, gal, bds, glo
 			self.avg_cno = (cno_sum / n) if n else 0.0
 			self.nav_sat_top = sorted(sat_details, key=lambda s: s["cno"], reverse=True)[:8]
+			self.last_nav_sat_monotonic = time.monotonic()
 
 		elif ident == "NAV-DOP":
 			pd = getattr(msg, "pDOP", None)
 			if pd is not None:
 				self.pdop = float(pd)
+				self.last_nav_dop_monotonic = time.monotonic()
 		elif ident == "NAV-TIMEUTC":
 			self.utc_ok = bool(getattr(msg, "validUTC", 0))
 		elif ident == "NAV-PVT":
@@ -528,6 +543,7 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 		while not stop_evt.is_set():
 			t_loop0 = time.monotonic()
 			# --- snapshot current telemetry fields ---
+			now_mono = time.monotonic()
 			unix_ms = int(time.time() * 1000)
 			temp_c  = float(getattr(agg, "temp_c", 0.0) or 0.0)
 			qerr_ps = int(getattr(agg, "qerr_ps", 0) or 0)
@@ -540,17 +556,39 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 			glo_used = int(getattr(agg, "glo_used", 0) or 0)
 			avg_cno  = float(getattr(agg, "avg_cno", 0.0) or 0.0)
 			pdop     = float(getattr(agg, "pdop", 0.0) or 0.0)
+			last_tim_tp = getattr(agg, "last_tim_tp_monotonic", None)
+			last_nav_sat = getattr(agg, "last_nav_sat_monotonic", None)
+			qerr_age_ms = None if last_tim_tp is None else max(0, int((now_mono - last_tim_tp) * 1000))
+			nav_sat_age_ms = None if last_nav_sat is None else max(0, int((now_mono - last_nav_sat) * 1000))
+			qerr_valid = qerr_age_ms is not None and qerr_age_ms <= QERR_STALE_MS
+			nav_sat_valid = nav_sat_age_ms is not None and nav_sat_age_ms <= NAV_SAT_STALE_MS
+			telemetry_stale = not qerr_valid or not nav_sat_valid
+			if telemetry_stale and (now_mono - agg.last_telem_stale_warning_monotonic) >= TELEM_STALE_WARN_S:
+				log.warning(
+					"[telem] stale telemetry: qerr_valid=%s qerr_age_ms=%s nav_sat_valid=%s nav_sat_age_ms=%s",
+					qerr_valid,
+					qerr_age_ms,
+					nav_sat_valid,
+					nav_sat_age_ms,
+				)
+				agg.last_telem_stale_warning_monotonic = now_mono
+			qerr_ns = round(qerr_ps / 1000.0, 3)
 
 			# protobuf payload (for remote)
 			t = pb.Telemetry(
 				unix_ms=unix_ms,
 				temp_c=temp_c,
-				qerr_ns=round(qerr_ps / 1000.0, 3),  # ps → ns
+				qerr_ns=qerr_ns,  # ps → ns
 				utc_ok=utc_ok,
 				num_vis=num_vis, num_used=num_used,
 				gps_used=gps_used, gal_used=gal_used,
 				bds_used=bds_used, glo_used=glo_used,
 				avg_cno=avg_cno, pdop=pdop,
+				qerr_age_ms=0 if qerr_age_ms is None else qerr_age_ms,
+				nav_sat_age_ms=0 if nav_sat_age_ms is None else nav_sat_age_ms,
+				qerr_valid=qerr_valid,
+				nav_sat_valid=nav_sat_valid,
+				telemetry_stale=telemetry_stale,
 			)
 
 			# local JSONL record (flat & compact)
@@ -560,7 +598,12 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 					"ts": unix_ms,            # local write time (ms)
 					"unix_ms": unix_ms,       # device-reported epoch (ms)
 					"temp_c": temp_c,
-					"qerr_ns": round(qerr_ps / 1000.0, 3),
+					"qerr_ns": qerr_ns if qerr_valid else None,
+					"qerr_valid": qerr_valid,
+					"qerr_age_ms": qerr_age_ms,
+					"nav_sat_valid": nav_sat_valid,
+					"nav_sat_age_ms": nav_sat_age_ms,
+					"telemetry_stale": telemetry_stale,
 					"utc_ok": utc_ok,
 					"num_vis": num_vis, "num_used": num_used,
 					"gps_used": gps_used, "gal_used": gal_used,
