@@ -1678,7 +1678,8 @@ async def control_pipe(ser, ser_lock, uid_hex, fwver, protver, hwver, mount_toke
 			log.debug("control: loop ended")
 	except asyncio.CancelledError:
 		# The entire control_pipe task was cancelled by our supervisor.
-		print("control: shutting down...")
+		with contextlib.suppress(BrokenPipeError, OSError):
+			print("control: shutting down...", flush=True)
 		log.info("control: shutting down…")
 		return
 
