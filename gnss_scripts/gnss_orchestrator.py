@@ -20,6 +20,7 @@ import re
 import shlex
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -522,6 +523,35 @@ def _shell_join(args: list[Any]) -> str:
     return " ".join(shlex.quote(str(arg)) for arg in args)
 
 
+def _utc_run_stamp() -> str:
+    """Return a compact UTC timestamp used to group one start command's logs."""
+
+    return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%SZ")
+
+
+def _timestamped_log_path(logdir: str, screen_name: str, run_stamp: str) -> str:
+    """Return the per-run log path for a screen-managed process."""
+
+    return str(Path(logdir) / f"{screen_name}_{run_stamp}.log")
+
+
+def _latest_log_path(logdir: str, screen_name: str) -> str:
+    """Return the stable path that points at the latest per-run log."""
+
+    return str(Path(logdir) / f"{screen_name}.log")
+
+
+def _timestamped_log_command(args: list[Any], log_path: str) -> str:
+    """Build a shell command that prefixes stdout/stderr lines with UTC time."""
+
+    awk_program = r'{ print strftime("%Y-%m-%dT%H:%M:%SZ"), $0; fflush(); }'
+    return (
+        "set -o pipefail; "
+        f"{_shell_join(args)} 2>&1 | "
+        f"TZ=UTC awk {shlex.quote(awk_program)} >> {shlex.quote(log_path)}"
+    )
+
+
 def _screen_grep_pattern(screen_name: str) -> str:
     """Return a screen -ls grep pattern for an exact screen session name."""
 
@@ -878,7 +908,7 @@ def _selected_node_items(
     return out
 
 
-def _server_launch_script(server_status: dict[str, Any]) -> tuple[str, str]:
+def _server_launch_script(server_status: dict[str, Any], run_stamp: str) -> tuple[str, str]:
     """Build the local Bash script that starts the GNSS server in screen.
 
     Returns:
@@ -889,7 +919,8 @@ def _server_launch_script(server_status: dict[str, Any]) -> tuple[str, str]:
     resolved = server_status["resolved"]
     screen = str(server.get("screen") or server.get("server_screen") or "gnss_server")
     logdir = str(resolved["logdir"])
-    log_path = str(Path(logdir) / f"{screen}.log")
+    log_path = _timestamped_log_path(logdir, screen, run_stamp)
+    latest_log = _latest_log_path(logdir, screen)
 
     server_args = [
         server["python"],
@@ -905,11 +936,12 @@ def _server_launch_script(server_status: dict[str, Any]) -> tuple[str, str]:
     if resolved.get("receiver_manifest"):
         server_args.extend(["--config", resolved["receiver_manifest"]])
 
-    inner = f"exec {_shell_join(server_args)} >> {shlex.quote(log_path)} 2>&1"
+    inner = _timestamped_log_command(server_args, log_path)
     script = "\n".join(
         [
             "set -euo pipefail",
             f"mkdir -p {shlex.quote(logdir)}",
+            f"ln -sfn {shlex.quote(Path(log_path).name)} {shlex.quote(latest_log)}",
             f"screen -S {shlex.quote(screen)} -X quit >/dev/null 2>&1 || true",
             "sleep 0.5",
             f"screen -dmS {shlex.quote(screen)} bash -c {shlex.quote(inner)}",
@@ -920,7 +952,7 @@ def _server_launch_script(server_status: dict[str, Any]) -> tuple[str, str]:
     return script, log_path
 
 
-def _start_server(config: dict[str, Any], *, dry_run: bool, mode: str = "differential") -> StartResult:
+def _start_server(config: dict[str, Any], *, dry_run: bool, mode: str = "differential", run_stamp: str) -> StartResult:
     """Start the local GNSS server, or describe the command in dry-run mode."""
 
     mode_config = _mode_settings(config, mode)
@@ -938,7 +970,7 @@ def _start_server(config: dict[str, Any], *, dry_run: bool, mode: str = "differe
     if "screen" not in server and "server_screen" in server:
         server["screen"] = server["server_screen"]
     server_status["config"] = server
-    script, log_path = _server_launch_script(server_status)
+    script, log_path = _server_launch_script(server_status, run_stamp)
     command = "bash -c " + shlex.quote(script)
 
     if not _all_checks_ok(server_status):
@@ -982,7 +1014,7 @@ def _start_server(config: dict[str, Any], *, dry_run: bool, mode: str = "differe
     )
 
 
-def _remote_agent_launch_script(node_status: dict[str, Any]) -> tuple[str, str]:
+def _remote_agent_launch_script(node_status: dict[str, Any], run_stamp: str) -> tuple[str, str]:
     """Build the remote Bash script that starts one GNSS agent in screen."""
 
     node = node_status["config"]
@@ -990,7 +1022,8 @@ def _remote_agent_launch_script(node_status: dict[str, Any]) -> tuple[str, str]:
     screen = str(node.get("agent_screen", "gnss_agent"))
     logdir = str(resolved["logdir"])
     telem_dir = str(resolved["telem_dir"])
-    log_path = str(Path(logdir) / f"{screen}.log")
+    log_path = _timestamped_log_path(logdir, screen, run_stamp)
+    latest_log = _latest_log_path(logdir, screen)
 
     agent_args = [
         node["python"],
@@ -1007,11 +1040,12 @@ def _remote_agent_launch_script(node_status: dict[str, Any]) -> tuple[str, str]:
         "-v",
         resolved["verbosity"],
     ]
-    inner = f"exec {_shell_join(agent_args)} >> {shlex.quote(log_path)} 2>&1"
+    inner = _timestamped_log_command(agent_args, log_path)
     script = "\n".join(
         [
             "set -euo pipefail",
             f"mkdir -p {shlex.quote(logdir)} {shlex.quote(telem_dir)}",
+            f"ln -sfn {shlex.quote(Path(log_path).name)} {shlex.quote(latest_log)}",
             f"screen -S {shlex.quote(screen)} -X quit >/dev/null 2>&1 || true",
             "sleep 0.5",
             f"cd {shlex.quote(resolved['repo'])}",
@@ -1029,13 +1063,14 @@ def _start_node(
     defaults: dict[str, Any],
     *,
     dry_run: bool,
+    run_stamp: str,
 ) -> StartResult:
     """Start one remote GNSS agent, or describe the action in dry-run mode."""
 
     node_status = _node_status(key, raw_node, defaults, local_only=False, check_bodnar=False)
     node = _merge(defaults, raw_node)
     node_status["config"] = node
-    script, log_path = _remote_agent_launch_script(node_status)
+    script, log_path = _remote_agent_launch_script(node_status, run_stamp)
     command = _shell_join(_ssh_base(node) + ["bash -c " + shlex.quote(script)])
     required = _str_bool(node.get("required", False))
     start_only_if_receiver_detected = _str_bool(node.get("start_only_if_receiver_detected", True))
@@ -1231,10 +1266,18 @@ def start_gnss(
 
     config = load_config(config_path)
     defaults = config.get("defaults", {})
-    results = [_start_server(config, dry_run=dry_run, mode=mode)]
+    run_stamp = _utc_run_stamp()
+    results = [_start_server(config, dry_run=dry_run, mode=mode, run_stamp=run_stamp)]
 
     if results[0].status == "failed":
-        return {"config_path": str(config_path), "dry_run": dry_run, "mode": mode, "bodnar": configure_bodnar, "results": results}
+        return {
+            "config_path": str(config_path),
+            "dry_run": dry_run,
+            "mode": mode,
+            "bodnar": configure_bodnar,
+            "run_stamp": run_stamp,
+            "results": results,
+        }
 
     for key, raw_node in _selected_node_items(config, nodes, include_disabled=include_disabled):
         if configure_bodnar:
@@ -1254,9 +1297,16 @@ def start_gnss(
                     )
                 )
                 continue
-        results.append(_start_node(key, raw_node, defaults, dry_run=dry_run))
+        results.append(_start_node(key, raw_node, defaults, dry_run=dry_run, run_stamp=run_stamp))
 
-    return {"config_path": str(config_path), "dry_run": dry_run, "mode": mode, "bodnar": configure_bodnar, "results": results}
+    return {
+        "config_path": str(config_path),
+        "dry_run": dry_run,
+        "mode": mode,
+        "bodnar": configure_bodnar,
+        "run_stamp": run_stamp,
+        "results": results,
+    }
 
 
 def _stop_script(screen_name: str, process_match: str, grace_sec: int, log_path: str | None) -> str:

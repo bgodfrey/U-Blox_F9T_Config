@@ -644,7 +644,7 @@ For the server, the orchestrator:
 1. Creates the server log directory if needed.
 2. Stops any existing server screen session with the same screen name.
 3. Starts `server_v1.py` in a detached screen session.
-4. Writes server stdout/stderr to the configured log file.
+4. Writes server stdout/stderr to a UTC-stamped per-run log file.
 5. Checks that the screen session exists after launch.
 
 For each selected node, the orchestrator:
@@ -654,9 +654,13 @@ For each selected node, the orchestrator:
 3. Stops any existing agent screen session with the same screen name.
 4. Changes into the configured repo directory.
 5. Starts `agent_v1.py` in a detached screen session.
-6. Writes agent stdout/stderr to the configured log file.
+6. Writes agent stdout/stderr to a UTC-stamped per-run log file.
 7. Checks that the screen session exists after launch.
 8. If launch fails, it prints recent log output to help diagnose the failure.
+
+The server and all agents launched by a single `start` command share the same
+UTC run stamp in their orchestrator log filenames. Each log line is also
+prefixed with a UTC timestamp.
 
 If `--bodnar` is used, the orchestrator also configures each selected node's
 present Bodnar before starting that node's GNSS agent.
@@ -739,15 +743,16 @@ Dry run output includes the generated local or remote shell script:
 
 ```text
 dry-run  node   winters      WINTERS            host=panoseti-winter
-  detail: would start screen gnss_agent with log /home/panoseti/gnss_logging/gnss_agent.log
+  detail: would start screen gnss_agent with log /home/panoseti/gnss_logging/gnss_agent_20260701_234002Z.log
   target: ssh panoseti-winter
   remote script:
     set -euo pipefail
     mkdir -p /home/panoseti/gnss_logging /home/panoseti/gnss_telem
+    ln -sfn gnss_agent_20260701_234002Z.log /home/panoseti/gnss_logging/gnss_agent.log
     screen -S gnss_agent -X quit >/dev/null 2>&1 || true
     sleep 0.5
     cd /home/panoseti/U-Blox_F9T_Config
-    screen -dmS gnss_agent bash -lc 'exec /home/panoseti/miniconda3/envs/pygnss_312/bin/python -u /home/panoseti/U-Blox_F9T_Config/agent_v1.py --cast_addr 10.200.146.1:50051 --ctrl_addr 10.200.146.1:50051 -v 2 >> /home/panoseti/gnss_logging/gnss_agent.log 2>&1'
+    screen -dmS gnss_agent bash -c 'set -o pipefail; /home/panoseti/miniconda3/envs/pygnss_312/bin/python -u /home/panoseti/U-Blox_F9T_Config/agent_v1.py --cast_addr 10.200.146.1:50051 --ctrl_addr 10.200.146.1:50051 -v 2 2>&1 | TZ=UTC awk '"'"'{ print strftime("%Y-%m-%dT%H:%M:%SZ"), $0; fflush(); }'"'"' >> /home/panoseti/gnss_logging/gnss_agent_20260701_234002Z.log'
     sleep 1
     screen -ls | grep -q -- '\.gnss_agent[[:space:]]'
 ```
@@ -968,14 +973,25 @@ The orchestrator launch logs are separate from telemetry files.
 Typical server log:
 
 ```text
-/home/obs/U-Blox_F9T_Config/logging/gnss_server.log
+/home/obs/U-Blox_F9T_Config/logging/gnss_server_20260701_234002Z.log
 ```
 
 Typical agent log:
 
 ```text
+/home/panoseti/gnss_logging/gnss_agent_20260701_234002Z.log
+```
+
+For convenience, the orchestrator also maintains stable `latest` paths:
+
+```text
+/home/obs/U-Blox_F9T_Config/logging/gnss_server.log
 /home/panoseti/gnss_logging/gnss_agent.log
 ```
+
+Those stable paths are symlinks to the most recent UTC-stamped run log. This
+keeps `tail -f gnss_agent.log` convenient while preserving one operational log
+file per orchestrator start.
 
 Typical telemetry directory:
 
@@ -984,6 +1000,12 @@ Typical telemetry directory:
 ```
 
 The launch logs capture stdout/stderr from `server_v1.py` and `agent_v1.py`.
+Each launch-log line starts with a UTC timestamp, for example:
+
+```text
+2026-07-01T23:40:02Z [agent] discovering u-blox serial port (auto)...
+```
+
 The telemetry directory is where the GNSS telemetry data products go.
 
 Useful remote checks:
@@ -1230,10 +1252,13 @@ Common causes:
 
 ### Old Log Output Appears
 
-The agent/server launch logs append by default. If you see old errors followed
-by new startup messages, that is normal.
+The agent/server launch logs are written to one UTC-stamped file per
+orchestrator `start` run. If `gnss_agent.log` or `gnss_server.log` shows old
+output, check whether the path is a symlink to the run you expected:
 
-Use timestamps or clear/archive logs manually if needed.
+```bash
+ls -l /home/panoseti/gnss_logging/gnss_agent.log
+```
 
 ## Safety Notes
 
