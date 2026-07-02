@@ -62,7 +62,6 @@ _START_STR = _START_TS.strftime("%Y%m%d_%H%M%SZ")
 TELEM_DIR   = REPO_ROOT / "telemetry"
 LOGGING_DIR = REPO_ROOT / "logging"
 
-TELEM_DIR.mkdir(parents=True, exist_ok=True)
 TELEM_SVC_ADDR = os.getenv("TELEM_SVC_ADDR", "127.0.0.1:50052")
 LOGGING_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -100,6 +99,19 @@ LAST_SEEN = {}
 # ------------------------------ helpers -------------------------------------
 
 
+def configure_telemetry_dir(telem_dir: str | None) -> None:
+	"""Set the server telemetry output directory before telemetry is logged."""
+
+	global TELEM_DIR, _LOG_PATH_TELEM
+	if telem_dir:
+		path = Path(telem_dir).expanduser()
+		if not path.is_absolute():
+			path = REPO_ROOT / path
+		TELEM_DIR = path
+	TELEM_DIR.mkdir(parents=True, exist_ok=True)
+	_LOG_PATH_TELEM = str(TELEM_DIR / f"telemetry_{_START_STR}.jsonl")
+
+
 # Exit cleanly on SIGINT/SIGTERM (Unix).
 def install_signal_handlers(stop_evt: asyncio.Event) -> None:
 	loop = asyncio.get_running_loop()
@@ -122,6 +134,7 @@ def parse_args():
 	p.add_argument("--ip", default = "0.0.0.0:50051", help = "IP address to bind to default is 0.0.0.0:50051")
 	p.add_argument("--log-file", default="", help="optional file path")
 	p.add_argument("--timing-mode", choices=["differential", "absolute"], default="differential", help="runtime timing mode")
+	p.add_argument("--telem-dir", default=str(TELEM_DIR), help="directory for server telemetry JSONL output")
 	p.add_argument("-v", "--verbosity", type=int, default=2, help="0=errors, 1=warn, 2=info, 3=debug")
 	return p.parse_args()
 
@@ -761,9 +774,11 @@ if __name__ == "__main__":
 	# Entrypoint: Run the server’s main function and allow KeyboardInterrupt to exit cleanly.
 	try:
 		args = parse_args()
+		configure_telemetry_dir(args.telem_dir)
 		setup_logging(args.verbosity, log_file = _LOG_PATH_LOGGING or None, console = False)
 		log = logging.getLogger("server")   # or "server"
 		log.info("starting up…")
+		log.info("server telemetry directory set to %s", TELEM_DIR)
 		if args.config:
 			DEFAULT_POLICY['manifest'] = args.config
 			log.info(f"set config file to {args.config}")

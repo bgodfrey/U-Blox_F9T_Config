@@ -291,6 +291,7 @@ Example:
   "repo": "/home/obs/U-Blox_F9T_Config",
   "script": "server_v1.py",
   "logdir": "logging",
+  "telem_dir": "telemetry",
   "screen": "gnss_server",
   "bind_addr": "0.0.0.0:50051",
   "verbosity": 2,
@@ -306,6 +307,7 @@ Important fields:
 - `repo`: repo location on the server host.
 - `script`: server script path, usually `server_v1.py`.
 - `logdir`: where server logs go.
+- `telem_dir`: where server telemetry JSONL files go.
 - `screen`: screen session name.
 - `bind_addr`: gRPC bind address, for example `0.0.0.0:50051`.
 - `verbosity`: passed to `server_v1.py` as `-v`.
@@ -641,7 +643,7 @@ By default this starts in differential mode.
 
 For the server, the orchestrator:
 
-1. Creates the server log directory if needed.
+1. Creates the server log and telemetry directories if needed.
 2. Stops any existing server screen session with the same screen name.
 3. Starts `server_v1.py` in a detached screen session.
 4. Writes server stdout/stderr to a UTC-stamped per-run log file.
@@ -997,6 +999,12 @@ Typical telemetry directory:
 
 ```text
 /home/panoseti/gnss_telem
+```
+
+Typical server telemetry directory:
+
+```text
+/home/obs/U-Blox_F9T_Config/telemetry
 ```
 
 The launch logs capture stdout/stderr from `server_v1.py` and `agent_v1.py`.

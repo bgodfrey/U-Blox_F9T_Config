@@ -610,6 +610,19 @@ def _check_required_fields(name: str, item: dict[str, Any], fields: list[str]) -
     return checks
 
 
+def _server_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Return server config with shared defaults and server-specific defaults."""
+
+    defaults = config.get("defaults", {})
+    raw_server = config.get("server", {})
+    server = _merge(defaults, raw_server)
+    if "screen" not in server and "server_screen" in server:
+        server["screen"] = server["server_screen"]
+    if "telem_dir" not in raw_server:
+        server["telem_dir"] = "telemetry"
+    return server
+
+
 def _server_status(config: dict[str, Any]) -> dict[str, Any]:
     """Validate local server configuration and filesystem prerequisites.
 
@@ -619,10 +632,7 @@ def _server_status(config: dict[str, Any]) -> dict[str, Any]:
     server/node results uniformly.
     """
 
-    defaults = config.get("defaults", {})
-    server = _merge(defaults, config.get("server", {}))
-    if "screen" not in server and "server_screen" in server:
-        server["screen"] = server["server_screen"]
+    server = _server_config(config)
 
     # Server script/logdir paths may be absolute, but the usual case is that
     # they are stored relative to the server repo.
@@ -631,6 +641,8 @@ def _server_status(config: dict[str, Any]) -> dict[str, Any]:
     server_script = _resolve_under_repo(repo, script) if repo else script
     logdir = str(server.get("logdir", "logging"))
     logdir_path = _resolve_under_repo(repo, logdir) if repo else logdir
+    telem_dir = str(server.get("telem_dir", "telemetry"))
+    telem_dir_path = _resolve_under_repo(repo, telem_dir) if repo else telem_dir
     receiver_manifest = server.get("receiver_manifest")
     receiver_manifest_path = ""
     if receiver_manifest:
@@ -641,7 +653,7 @@ def _server_status(config: dict[str, Any]) -> dict[str, Any]:
     checks = _check_required_fields(
         "server",
         server,
-        ["daq_name", "host", "python", "repo", "script", "logdir", "screen", "bind_addr"],
+        ["daq_name", "host", "python", "repo", "script", "logdir", "telem_dir", "screen", "bind_addr"],
     )
 
     # These checks are local because the GNSS server is expected to run on the
@@ -652,6 +664,7 @@ def _server_status(config: dict[str, Any]) -> dict[str, Any]:
         checks.append(Check("server repo directory", Path(repo).is_dir(), repo))
     checks.append(Check("server script file", Path(server_script).is_file(), server_script))
     checks.append(Check("server logdir parent", Path(logdir_path).parent.is_dir(), logdir_path))
+    checks.append(Check("server telem_dir parent", Path(telem_dir_path).parent.is_dir(), telem_dir_path))
     if receiver_manifest_path:
         checks.append(Check("server receiver manifest", Path(receiver_manifest_path).is_file(), receiver_manifest_path))
 
@@ -666,6 +679,7 @@ def _server_status(config: dict[str, Any]) -> dict[str, Any]:
             "repo": repo,
             "script": server_script,
             "logdir": logdir_path,
+            "telem_dir": telem_dir_path,
             "receiver_manifest": receiver_manifest_path,
         },
     }
@@ -919,6 +933,7 @@ def _server_launch_script(server_status: dict[str, Any], run_stamp: str) -> tupl
     resolved = server_status["resolved"]
     screen = str(server.get("screen") or server.get("server_screen") or "gnss_server")
     logdir = str(resolved["logdir"])
+    telem_dir = str(resolved["telem_dir"])
     log_path = _timestamped_log_path(logdir, screen, run_stamp)
     latest_log = _latest_log_path(logdir, screen)
 
@@ -930,6 +945,8 @@ def _server_launch_script(server_status: dict[str, Any], run_stamp: str) -> tupl
         server.get("bind_addr", "0.0.0.0:50051"),
         "--timing-mode",
         server.get("timing_mode", "differential"),
+        "--telem-dir",
+        resolved["telem_dir"],
         "-v",
         server.get("verbosity", 2),
     ]
@@ -940,7 +957,7 @@ def _server_launch_script(server_status: dict[str, Any], run_stamp: str) -> tupl
     script = "\n".join(
         [
             "set -euo pipefail",
-            f"mkdir -p {shlex.quote(logdir)}",
+            f"mkdir -p {shlex.quote(logdir)} {shlex.quote(telem_dir)}",
             f"ln -sfn {shlex.quote(Path(log_path).name)} {shlex.quote(latest_log)}",
             f"screen -S {shlex.quote(screen)} -X quit >/dev/null 2>&1 || true",
             "sleep 0.5",
@@ -965,10 +982,7 @@ def _start_server(config: dict[str, Any], *, dry_run: bool, mode: str = "differe
     config["server"]["timing_mode"] = mode_config.get("timing_mode", mode)
 
     server_status = _server_status(config)
-    defaults = config.get("defaults", {})
-    server = _merge(defaults, config.get("server", {}))
-    if "screen" not in server and "server_screen" in server:
-        server["screen"] = server["server_screen"]
+    server = _server_config(config)
     server_status["config"] = server
     script, log_path = _server_launch_script(server_status, run_stamp)
     command = "bash -c " + shlex.quote(script)
@@ -1401,10 +1415,7 @@ def _stop_server(config: dict[str, Any], *, dry_run: bool) -> StopResult:
     """Stop the local GNSS server, or describe the command in dry-run mode."""
 
     server_status = _server_status(config)
-    defaults = config.get("defaults", {})
-    server = _merge(defaults, config.get("server", {}))
-    if "screen" not in server and "server_screen" in server:
-        server["screen"] = server["server_screen"]
+    server = _server_config(config)
     server_status["config"] = server
     script, log_path = _server_stop_script(server_status)
     command = "bash -c " + shlex.quote(script)
