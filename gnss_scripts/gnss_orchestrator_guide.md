@@ -831,6 +831,19 @@ Stop only agents, leaving the server running:
 python gnss_orchestrator.py stop --agents-only
 ```
 
+Stop all agents and the server, then compress completed log and telemetry
+files:
+
+```bash
+python gnss_orchestrator.py stop --compress-logs
+```
+
+Stop one node and compress that node's completed files:
+
+```bash
+python gnss_orchestrator.py stop --node WINTERS --compress-logs
+```
+
 Preview stop commands:
 
 ```bash
@@ -841,6 +854,35 @@ Emit machine-readable stop output:
 
 ```bash
 python gnss_orchestrator.py stop --json
+```
+
+### Stop With Compression
+
+`--compress-logs` runs after each selected process has stopped. It uses
+`gzip -9` on completed files in the selected log and telemetry directories.
+
+It compresses regular files matching:
+
+- `*.log`
+- `*.txt`
+- `*.jsonl`
+
+It skips symlinks such as `gnss_agent.log` and `gnss_server.log`. If those
+latest-log symlinks pointed at a file that was compressed, the orchestrator
+updates the symlink to point at the new `.gz` file.
+
+Compression follows the same target selection as stop:
+
+- `stop --compress-logs` stops/compresses all selected agents and then the
+  server.
+- `stop --node WINTERS --compress-logs` stops/compresses only WINTERS.
+- `stop --agents-only --compress-logs` stops/compresses agents only.
+- `stop --server-only --compress-logs` stops/compresses the server only.
+
+Dry run is safe and shows the generated compression commands:
+
+```bash
+python gnss_orchestrator.py stop --compress-logs --dry-run
 ```
 
 ## Direct Register Verifier

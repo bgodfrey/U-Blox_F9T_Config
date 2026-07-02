@@ -1455,6 +1455,7 @@ def _node_stop_status(key: str, raw_node: dict[str, Any], defaults: dict[str, An
     repo = str(node.get("repo", ""))
     agent_script = _resolve_under_repo(repo, str(node.get("agent_script", "agent_v1.py"))) if repo else ""
     logdir = _resolve_under_repo(repo, str(node.get("logdir", "logging"))) if repo else ""
+    telem_dir = _resolve_under_repo(repo, str(node.get("telem_dir", "telem"))) if repo else ""
     return {
         "kind": "node",
         "key": key,
@@ -1464,6 +1465,7 @@ def _node_stop_status(key: str, raw_node: dict[str, Any], defaults: dict[str, An
         "resolved": {
             "agent_script": agent_script,
             "logdir": logdir,
+            "telem_dir": telem_dir,
         },
         "config": node,
     }
@@ -1537,6 +1539,150 @@ def _stop_node(
     )
 
 
+def _compress_logs_script(paths: list[str]) -> str:
+    """Build a Bash script that gzip-compresses completed log files.
+
+    The find expression uses -type f so latest-log symlinks such as
+    gnss_agent.log and gnss_server.log are not replaced by .gz files.
+    """
+
+    quoted_paths = " ".join(shlex.quote(path) for path in paths if path)
+    return "\n".join(
+        [
+            "set -euo pipefail",
+            f"paths=({quoted_paths})",
+            "files=()",
+            "links=()",
+            'for dir in "${paths[@]}"; do',
+            '  [ -d "$dir" ] || continue',
+            '  while IFS= read -r -d \'\' link; do',
+            '    target="$(readlink "$link" 2>/dev/null || true)"',
+            '    [ -n "$target" ] || continue',
+            '    if [[ "$target" = /* ]]; then',
+            '      compressed_target="${target}.gz"',
+            '      link_target="${target}.gz"',
+            "    else",
+            '      compressed_target="${dir}/${target}.gz"',
+            '      link_target="${target}.gz"',
+            "    fi",
+            '    links+=("${link}|${compressed_target}|${link_target}")',
+            "  done < <(find \"$dir\" -maxdepth 1 -type l \\( -name '*.log' -o -name '*.txt' -o -name '*.jsonl' \\) -print0)",
+            '  while IFS= read -r -d \'\' file; do',
+            '    files+=("$file")',
+            "  done < <(find \"$dir\" -maxdepth 1 -type f \\( -name '*.log' -o -name '*.txt' -o -name '*.jsonl' \\) -print0)",
+            "done",
+            'if [ "${#files[@]}" -eq 0 ]; then',
+            "  echo '[OK] no files to compress'",
+            "  exit 0",
+            "fi",
+            'gzip -9 -- "${files[@]}"',
+            'for item in "${links[@]}"; do',
+            "  IFS='|' read -r link compressed_target link_target <<< \"$item\"",
+            '  [ -f "$compressed_target" ] || continue',
+            '  ln -sfn "$link_target" "$link"',
+            "done",
+            'echo "[OK] compressed ${#files[@]} files"',
+        ]
+    )
+
+
+def _server_compress_logs(config: dict[str, Any], *, dry_run: bool) -> StopResult:
+    """Compress completed local server log/telemetry files."""
+
+    server_status = _server_status(config)
+    server = _server_config(config)
+    resolved = server_status["resolved"]
+    paths = [str(resolved["logdir"]), str(resolved["telem_dir"])]
+    script = _compress_logs_script(paths)
+    command = "bash -c " + shlex.quote(script)
+
+    if dry_run:
+        return StopResult(
+            kind="compress",
+            key="server",
+            daq_name=str(server_status["daq_name"]),
+            host=str(server_status["host"]),
+            status="dry-run",
+            detail="would gzip -9 server log and telemetry files",
+            required=True,
+            command=command,
+            script=script,
+        )
+
+    result = _run_bash(script, timeout=float(server.get("compress_timeout_sec", 300.0)))
+    ok = result.returncode == 0
+    return StopResult(
+        kind="compress",
+        key="server",
+        daq_name=str(server_status["daq_name"]),
+        host=str(server_status["host"]),
+        status="compressed" if ok else "failed",
+        detail=_format_cmd_result(result),
+        required=True,
+        command=command,
+        script=script,
+    )
+
+
+def _node_compress_logs(
+    key: str,
+    raw_node: dict[str, Any],
+    defaults: dict[str, Any],
+    *,
+    dry_run: bool,
+) -> StopResult:
+    """Compress completed remote agent log/telemetry files."""
+
+    node_status = _node_stop_status(key, raw_node, defaults)
+    node = node_status["config"]
+    resolved = node_status["resolved"]
+    paths = [str(resolved["logdir"]), str(resolved["telem_dir"])]
+    script = _compress_logs_script(paths)
+    command = _shell_join(_ssh_base(node) + ["bash -c " + shlex.quote(script)])
+    required = _str_bool(node.get("required", False))
+
+    if dry_run:
+        return StopResult(
+            kind="compress",
+            key=key,
+            daq_name=str(node_status["daq_name"]),
+            host=str(node_status["host"]),
+            status="dry-run",
+            detail="would gzip -9 agent log and telemetry files",
+            required=required,
+            command=command,
+            script=script,
+        )
+
+    ssh_result = _remote_run(node, "true")
+    if ssh_result.returncode != 0:
+        return StopResult(
+            kind="compress",
+            key=key,
+            daq_name=str(node_status["daq_name"]),
+            host=str(node_status["host"]),
+            status="failed",
+            detail="ssh unreachable: " + _format_cmd_result(ssh_result),
+            required=required,
+            command=command,
+            script=script,
+        )
+
+    result = _remote_run(node, script, timeout=float(node.get("compress_timeout_sec", 300.0)))
+    ok = result.returncode == 0
+    return StopResult(
+        kind="compress",
+        key=key,
+        daq_name=str(node_status["daq_name"]),
+        host=str(node_status["host"]),
+        status="compressed" if ok else "failed",
+        detail=_format_cmd_result(result),
+        required=required,
+        command=command,
+        script=script,
+    )
+
+
 def stop_gnss(
     config_path: str | os.PathLike[str] = DEFAULT_CONFIG,
     *,
@@ -1545,6 +1691,7 @@ def stop_gnss(
     include_disabled: bool = False,
     server_only: bool = False,
     agents_only: bool = False,
+    compress_logs: bool = False,
 ) -> dict[str, Any]:
     """Stop GNSS agents and, when appropriate, the local GNSS server.
 
@@ -1563,16 +1710,23 @@ def stop_gnss(
 
     if stop_agents:
         for key, raw_node in _selected_node_items(config, nodes, include_disabled=include_disabled):
-            results.append(_stop_node(key, raw_node, defaults, dry_run=dry_run))
+            stop_result = _stop_node(key, raw_node, defaults, dry_run=dry_run)
+            results.append(stop_result)
+            if compress_logs and stop_result.status in {"stopped", "dry-run"}:
+                results.append(_node_compress_logs(key, raw_node, defaults, dry_run=dry_run))
 
     if stop_server:
-        results.append(_stop_server(config, dry_run=dry_run))
+        stop_result = _stop_server(config, dry_run=dry_run)
+        results.append(stop_result)
+        if compress_logs and stop_result.status in {"stopped", "dry-run"}:
+            results.append(_server_compress_logs(config, dry_run=dry_run))
 
     return {
         "config_path": str(config_path),
         "dry_run": dry_run,
         "server_only": server_only,
         "agents_only": agents_only,
+        "compress_logs": compress_logs,
         "results": results,
     }
 
@@ -1640,13 +1794,15 @@ def _print_stop(report: dict[str, Any]) -> None:
     mode = "dry-run" if report.get("dry_run") else "stop"
     print(f"Config: {report['config_path']}")
     print(f"Mode:   {mode}")
+    if report.get("compress_logs"):
+        print("Compress logs: enabled")
     print()
     for item in report["results"]:
         print(f"{item.status:8} {item.kind:6} {item.key:12} {item.daq_name:18} host={item.host}")
         if item.detail:
             print(f"  detail: {item.detail}")
         if report.get("dry_run") and item.script:
-            if item.kind == "node":
+            if item.kind == "node" or (item.kind == "compress" and item.key != "server"):
                 print(f"  target: ssh {item.host}")
                 print("  remote script:")
             else:
@@ -1713,6 +1869,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     stop.add_argument("--include-disabled", action="store_true", help="include nodes marked present=false")
     stop.add_argument("--server-only", action="store_true", help="stop only the local GNSS server")
     stop.add_argument("--agents-only", action="store_true", help="stop agents without stopping the local GNSS server")
+    stop.add_argument("--compress-logs", action="store_true", help="gzip -9 completed log and telemetry files after stopping")
     stop.add_argument("--dry-run", action="store_true", help="show stop commands without running them")
     stop.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     return parser.parse_args(argv)
@@ -1783,6 +1940,7 @@ def main(argv: list[str] | None = None) -> int:
             include_disabled=args.include_disabled,
             server_only=args.server_only,
             agents_only=args.agents_only,
+            compress_logs=args.compress_logs,
         )
         if args.json:
             print(json.dumps(_jsonable(report), indent=2, sort_keys=True))
