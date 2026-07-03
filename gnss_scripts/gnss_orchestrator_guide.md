@@ -28,6 +28,24 @@ reference setup. Bodnar configuration is optional and is enabled explicitly with
 
 Run these commands from the repo or from `gnss_scripts/`.
 
+All commands and subcommands have built-in help:
+
+```bash
+python gnss_orchestrator.py --help
+python gnss_orchestrator.py status --help
+python gnss_orchestrator.py start --help
+python gnss_orchestrator.py stop --help
+```
+
+Use a non-default deployment config:
+
+```bash
+python gnss_orchestrator.py --config /path/to/gnss_deployment.json5 status
+python gnss_orchestrator.py status --config /path/to/gnss_deployment.json5
+```
+
+The default config remains `gnss_scripts/gnss_deployment.json5`.
+
 Check all present nodes:
 
 ```bash
@@ -99,6 +117,12 @@ Emit JSON instead of human-readable output:
 ```bash
 python gnss_orchestrator.py status --verify-registers --json
 ```
+
+Do not use `--verify-registers` during an active data acquisition run. Register
+verification opens the same receiver serial device as the running agent and can
+temporarily disrupt UBX telemetry reads. Use plain `status --json` during live
+runs, and reserve `--verify-registers` for before `start`, after `stop`, or
+controlled debugging.
 
 ## Timing Modes
 
@@ -520,6 +544,14 @@ Register verification is enabled with:
 ```bash
 python gnss_orchestrator.py status --verify-registers
 ```
+
+**Important operational warning:** `--verify-registers` is register read-only,
+but it is not non-invasive while an agent is running. The verifier opens the
+u-blox serial port, polls `SEC-UNIQID`, sends `UBX-CFG-VALGET`, and reads UBX
+responses. That can compete with the running agent's serial demux and briefly
+starve the agent of `TIM-TP`/`NAV-SAT` telemetry. During active acquisition this
+can mark qerr stale, so avoid `--verify-registers` while data are being taken.
+Use normal `status` for live health checks.
 
 This causes the orchestrator to SSH to the node and run:
 
@@ -1315,7 +1347,9 @@ ls -l /home/panoseti/gnss_logging/gnss_agent.log
 - `status` is read-only.
 - `status` may run `lbe-1420-conf.py --status` for present Bodnars, which is a
   read-only device query.
-- `status --verify-registers` polls receiver registers but does not write them.
+- `status --verify-registers` polls receiver registers but does not write them;
+  however, it opens the receiver serial port and can interfere with a running
+  agent's UBX telemetry stream. Do not use it during active data acquisition.
 - `start --dry-run` is read-only.
 - `stop --dry-run` is read-only.
 - `start` restarts matching `screen` sessions before launching new ones.

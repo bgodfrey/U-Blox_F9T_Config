@@ -1839,15 +1839,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             omitted, argparse reads sys.argv.
     """
 
+    def add_config_argument(arg_parser: argparse.ArgumentParser, *, default: str | Any = argparse.SUPPRESS) -> None:
+        """Add the deployment config option to the root parser or a subcommand."""
+        arg_parser.add_argument(
+            "--config",
+            default=default,
+            help=f"path to deployment JSON5 config (default: {DEFAULT_CONFIG})",
+        )
+
     parser = argparse.ArgumentParser(description="GNSS deployment orchestrator")
-    parser.add_argument(
-        "--config",
-        default=str(DEFAULT_CONFIG),
-        help=f"path to deployment JSON5 config (default: {DEFAULT_CONFIG})",
-    )
+    add_config_argument(parser, default=str(DEFAULT_CONFIG))
     sub = parser.add_subparsers(dest="command", required=True)
 
     status = sub.add_parser("status", help="validate config and check GNSS deployment prerequisites")
+    add_config_argument(status)
     status.add_argument("--node", action="append", default=[], help="limit status to a node key, host, or DAQ name")
     status.add_argument("--mode", choices=["differential", "absolute"], default="differential", help="GNSS timing mode for register verification")
     status.add_argument("--verify-registers", action="store_true", help="read receiver CFG registers and compare against the selected manifest")
@@ -1856,6 +1861,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     status.add_argument("--json", action="store_true", help="emit machine-readable JSON")
 
     start = sub.add_parser("start", help="start the GNSS server and selected agents")
+    add_config_argument(start)
     start.add_argument("--node", action="append", default=[], help="limit start to a node key, host, or DAQ name")
     start.add_argument("--mode", choices=["differential", "absolute"], default="differential", help="GNSS timing mode")
     start.add_argument("--bodnar", action="store_true", help="configure Leo Bodnar LBE-1420 devices before starting agents")
@@ -1864,6 +1870,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     start.add_argument("--json", action="store_true", help="emit machine-readable JSON")
 
     stop = sub.add_parser("stop", help="stop selected GNSS agents and optionally the server")
+    add_config_argument(stop)
     stop.add_argument("--node", action="append", default=[], help="limit stop to a node key, host, or DAQ name")
     stop.add_argument("--include-disabled", action="store_true", help="include nodes marked present=false")
     stop.add_argument("--server-only", action="store_true", help="stop only the local GNSS server")
