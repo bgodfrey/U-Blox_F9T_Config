@@ -28,7 +28,7 @@ import json5
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_CONFIG = SCRIPT_DIR / "gnss_deployment.json5"
+DEFAULT_CONFIG = Path("gnss_deployment.json5")
 
 
 @dataclass
@@ -88,7 +88,7 @@ def load_config(path: str | os.PathLike[str] = DEFAULT_CONFIG) -> dict[str, Any]
 
     Args:
         path: Path to the deployment config. Defaults to
-            gnss_scripts/gnss_deployment.json5.
+            gnss_deployment.json5 in the current working directory.
 
     Returns:
         The parsed JSON5 object as a nested dictionary/list structure.

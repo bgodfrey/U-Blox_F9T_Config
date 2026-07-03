@@ -26,7 +26,8 @@ reference setup. Bodnar configuration is optional and is enabled explicitly with
 
 ## Quick Reference
 
-Run these commands from the repo or from `gnss_scripts/`.
+Run these commands from the directory containing the deployment config, or pass
+`--config` explicitly.
 
 All commands and subcommands have built-in help:
 
@@ -44,7 +45,8 @@ python gnss_orchestrator.py --config /path/to/gnss_deployment.json5 status
 python gnss_orchestrator.py status --config /path/to/gnss_deployment.json5
 ```
 
-The default config remains `gnss_scripts/gnss_deployment.json5`.
+By default, the orchestrator looks for `./gnss_deployment.json5` in the current
+working directory.
 
 Check all present nodes:
 
@@ -210,14 +212,22 @@ still has differential/RTCM settings enabled.
 
 ## Deployment Config
 
-The orchestrator config lives at:
+The orchestrator config is usually named:
 
 ```text
-gnss_scripts/gnss_deployment.json5
+gnss_deployment.json5
 ```
 
 This file is separate from the receiver manifests. It describes the machines and
 process launch details, not the receiver register settings.
+
+The default lookup is relative to the current working directory. If the config
+is somewhere else, pass it explicitly:
+
+```bash
+python gnss_orchestrator.py --config gnss_scripts/gnss_deployment.json5 status
+python gnss_orchestrator.py status --config gnss_scripts/gnss_deployment.json5
+```
 
 Important top-level sections:
 
