@@ -19,6 +19,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +30,10 @@ import json5
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG = Path("gnss_deployment.json5")
+
+
+class ConfigLoadError(RuntimeError):
+    """Raised when the deployment config cannot be loaded cleanly."""
 
 
 @dataclass
@@ -94,8 +99,20 @@ def load_config(path: str | os.PathLike[str] = DEFAULT_CONFIG) -> dict[str, Any]
         The parsed JSON5 object as a nested dictionary/list structure.
     """
 
-    with open(path, "r", encoding="utf-8") as f:
-        return json5.load(f)
+    config_path = Path(path).expanduser()
+    try:
+        with config_path.open("r", encoding="utf-8") as f:
+            return json5.load(f)
+    except FileNotFoundError as exc:
+        raise ConfigLoadError(
+            f"deployment config not found: {config_path}\n"
+            "Run from the directory containing gnss_deployment.json5, or pass "
+            "--config /path/to/gnss_deployment.json5."
+        ) from exc
+    except OSError as exc:
+        raise ConfigLoadError(f"could not read deployment config {config_path}: {exc}") from exc
+    except Exception as exc:
+        raise ConfigLoadError(f"could not parse deployment config {config_path}: {exc}") from exc
 
 
 def _str_bool(value: Any) -> bool:
@@ -1890,74 +1907,78 @@ def main(argv: list[str] | None = None) -> int:
     """
 
     args = parse_args(argv)
-    if args.command == "status":
-        report = status_gnss(
-            args.config,
-            nodes=args.node,
-            include_disabled=args.include_disabled,
-            local_only=args.local_only,
-            verify_registers=args.verify_registers,
-            mode=args.mode,
-        )
-        if args.json:
-            print(json.dumps(_jsonable(report), indent=2, sort_keys=True))
-        else:
-            _print_status(report)
+    try:
+        if args.command == "status":
+            report = status_gnss(
+                args.config,
+                nodes=args.node,
+                include_disabled=args.include_disabled,
+                local_only=args.local_only,
+                verify_registers=args.verify_registers,
+                mode=args.mode,
+            )
+            if args.json:
+                print(json.dumps(_jsonable(report), indent=2, sort_keys=True))
+            else:
+                _print_status(report)
 
-        # For now, only the server and required nodes affect the process exit
-        # code. Optional nodes can fail status checks without making the command
-        # unusable for a higher-level DAQ controller.
-        failed_required = False
-        for item in report["results"]:
-            if item["kind"] == "server" or item.get("required"):
-                failed_required = failed_required or not all(check.ok for check in item["checks"])
-        return 1 if failed_required else 0
+            # For now, only the server and required nodes affect the process exit
+            # code. Optional nodes can fail status checks without making the command
+            # unusable for a higher-level DAQ controller.
+            failed_required = False
+            for item in report["results"]:
+                if item["kind"] == "server" or item.get("required"):
+                    failed_required = failed_required or not all(check.ok for check in item["checks"])
+            return 1 if failed_required else 0
 
-    if args.command == "start":
-        report = start_gnss(
-            args.config,
-            nodes=args.node,
-            dry_run=args.dry_run,
-            include_disabled=args.include_disabled,
-            mode=args.mode,
-            configure_bodnar=args.bodnar,
-        )
-        if args.json:
-            print(json.dumps(_jsonable(report), indent=2, sort_keys=True))
-        else:
-            _print_start(report)
+        if args.command == "start":
+            report = start_gnss(
+                args.config,
+                nodes=args.node,
+                dry_run=args.dry_run,
+                include_disabled=args.include_disabled,
+                mode=args.mode,
+                configure_bodnar=args.bodnar,
+            )
+            if args.json:
+                print(json.dumps(_jsonable(report), indent=2, sort_keys=True))
+            else:
+                _print_start(report)
 
-        failed_required = False
-        for item in report["results"]:
-            if item.kind == "server" or item.required:
-                failed_required = failed_required or item.status == "failed"
-        return 1 if failed_required else 0
+            failed_required = False
+            for item in report["results"]:
+                if item.kind == "server" or item.required:
+                    failed_required = failed_required or item.status == "failed"
+            return 1 if failed_required else 0
 
-    if args.command == "stop":
-        if args.server_only and args.agents_only:
-            raise SystemExit("--server-only and --agents-only cannot be used together")
-        if args.server_only and args.node:
-            raise SystemExit("--node cannot be used with --server-only")
+        if args.command == "stop":
+            if args.server_only and args.agents_only:
+                raise SystemExit("--server-only and --agents-only cannot be used together")
+            if args.server_only and args.node:
+                raise SystemExit("--node cannot be used with --server-only")
 
-        report = stop_gnss(
-            args.config,
-            nodes=args.node,
-            dry_run=args.dry_run,
-            include_disabled=args.include_disabled,
-            server_only=args.server_only,
-            agents_only=args.agents_only,
-            compress_logs=args.compress_logs,
-        )
-        if args.json:
-            print(json.dumps(_jsonable(report), indent=2, sort_keys=True))
-        else:
-            _print_stop(report)
+            report = stop_gnss(
+                args.config,
+                nodes=args.node,
+                dry_run=args.dry_run,
+                include_disabled=args.include_disabled,
+                server_only=args.server_only,
+                agents_only=args.agents_only,
+                compress_logs=args.compress_logs,
+            )
+            if args.json:
+                print(json.dumps(_jsonable(report), indent=2, sort_keys=True))
+            else:
+                _print_stop(report)
 
-        failed_required = False
-        for item in report["results"]:
-            if item.kind == "server" or item.required:
-                failed_required = failed_required or item.status == "failed"
-        return 1 if failed_required else 0
+            failed_required = False
+            for item in report["results"]:
+                if item.kind == "server" or item.required:
+                    failed_required = failed_required or item.status == "failed"
+            return 1 if failed_required else 0
+    except ConfigLoadError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
     raise AssertionError(f"unhandled command {args.command!r}")
 
