@@ -32,6 +32,35 @@ messages.
 
 ## Current Operating Model
 
+PANOSETI consists of a headnode and a number of data acquisition (DAQ) nodes.
+Each telescope/dome has a single DAQ node. Science data are collected by each
+DAQ node and then aggregated onto the headnode at the end of a data acquisition
+period. That design minimizes extra compute and I/O pressure on the DAQ nodes
+during an active run, where bottlenecks or packet loss need to be avoided. The
+GNSS receiver software follows the same principle: the DAQ nodes run lightweight
+agents, while coordination, routing, and operator control happen from the
+headnode.
+
+![Basic Design Setup](docs/img/F9T_BasicCodeSetup.png 'Basic Design Setup')
+
+*Basic setup of the code where the headnode serves as an intermediary between a
+base and some number of receivers.*
+
+The diagram shows the differential timing architecture. Each DAQ node has a
+local F9T receiver and runs an agent. The headnode runs the GNSS server. A
+receiver can be configured as a `base`, a `receiver`, or, in absolute timing
+mode, `timing_only`. In differential mode, a base agent streams RTCM correction
+frames back to the headnode; the headnode then forwards those corrections to
+receiver agents subscribed to the same mount. The receiver register settings and
+role assignments live in the manifest files, while machine-specific launch
+details live in the deployment config.
+
+This separation matters: the local configuration script can write receiver
+registers, but it does not describe or start the runtime communication pattern
+between receivers. The orchestrated gRPC setup is what makes the receivers talk
+to each other through the headnode and provides the normal logging and telemetry
+path.
+
 The intended way to operate the system is through:
 
 ```text
