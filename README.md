@@ -63,6 +63,9 @@ The orchestrator sits above the receiver manifests. The deployment config says
 where and how to run things; the manifests say what register settings should be
 applied to receivers.
 
+For a more detailed operator guide with additional examples, see
+[`gnss_scripts/gnss_orchestrator_guide.md`](gnss_scripts/gnss_orchestrator_guide.md).
+
 ## Timing Modes
 
 ### Differential Mode
@@ -353,6 +356,22 @@ The telemetry payload fields are:
   dB-Hz.
 - `pdop`: position dilution of precision from `UBX-NAV-DOP`. In fixed-position
   timing mode this may not be a useful health metric.
+
+Freshness defaults:
+
+- At agent startup, before the first `UBX-TIM-TP` and `UBX-NAV-SAT` messages
+  have been read, telemetry starts stale: `qerr_valid: false`,
+  `nav_sat_valid: false`, and `telemetry_stale: true`.
+- In agent-local JSONL, `qerr_age_ms` and `nav_sat_age_ms` are `null` until the
+  corresponding message has been seen at least once.
+- In protobuf/server telemetry, missing ages are encoded as `0`, but the
+  validity flags still indicate whether the data is actually fresh.
+- `qerr_valid` becomes false if the latest `UBX-TIM-TP` update is older than
+  3000 ms.
+- `nav_sat_valid` becomes false if the latest `UBX-NAV-SAT` update is older
+  than 10000 ms.
+- `telemetry_stale` is true whenever either `qerr_valid` or `nav_sat_valid` is
+  false.
 
 When the agent is run at debug verbosity (`-v 3`), agent-local telemetry can
 also include extra diagnostic fields:
