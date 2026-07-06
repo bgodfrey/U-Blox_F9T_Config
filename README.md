@@ -55,6 +55,9 @@ The main files are:
   start, stop, and manage the deployment.
 - `server_v1.py`: headnode gRPC server.
 - `agent_v1.py`: DAQ-node agent that talks to the local F9T receiver.
+- `conf_gnss_local.py`: one-off local receiver configuration script for cases
+  where you want to write and verify receiver settings without starting the
+  gRPC server/agent machinery.
 
 The orchestrator sits above the receiver manifests. The deployment config says
 where and how to run things; the manifests say what register settings should be
@@ -275,6 +278,36 @@ Receiver identity is based on the u-blox unique hardware ID from
 `UBX-SEC-UNIQID`. Site aliases in the manifest make telemetry and logs easier to
 read than raw hardware IDs.
 
+## One-Off Local Receiver Configuration
+
+For standalone receiver setup or bench testing, use:
+
+```text
+conf_gnss_local.py
+```
+
+This script applies receiver register settings directly over the local serial
+port. It can read the same manifest-style JSON5 files used by the orchestrated
+system, select a device by UID or alias, write the selected register plan, and
+verify the requested layer.
+
+Examples:
+
+```bash
+python conf_gnss_local.py manifest_f9t.json5 --list-devices
+python conf_gnss_local.py manifest_f9t.json5 --alias WINTERS --dry-run
+python conf_gnss_local.py manifest_f9t.json5 --alias WINTERS --verify-layer RAM
+python conf_gnss_local.py manifest_f9t.json5 --auto-uid --port /dev/ttyACM0 --verify-layer RAM
+```
+
+Use this path when you only want to configure the attached receiver. It does not
+start `server_v1.py`, does not start `agent_v1.py`, does not open any gRPC
+control or caster streams, and does not provide the normal local or remote
+telemetry logging used during a GNSS run.
+
+For operations where telemetry, server-side logging, RTCM routing, start/stop
+control, or multi-node management matter, use `gnss_orchestrator.py` instead.
+
 ## Telemetry
 
 Telemetry is written as JSON Lines (`.jsonl`). Each line is valid JSON and can
@@ -341,21 +374,6 @@ also include extra diagnostic fields:
 For timing quality, the most important fields are usually `unix_ms`, `qerr_ns`,
 `qerr_valid`, `qerr_age_ms`, `utc_ok`, `num_used`, `avg_cno`, and
 `telemetry_stale`.
-
-## Plotting Telemetry
-
-`Sandbox/telem_viewer.ipynb` is a scratch notebook for inspecting telemetry.
-It can read a single `.jsonl` or `.jsonl.gz` file and currently includes plots
-for:
-
-- `qerr_ns` versus PT time.
-- qerr histograms.
-- average C/N0 versus PT time.
-- total satellites in view versus PT time.
-- `num_used / num_vis` versus PT time.
-
-`Sandbox` files are local analysis artifacts and are not part of the normal
-deployment.
 
 ## Manual Script Usage
 
