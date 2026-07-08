@@ -585,6 +585,19 @@ def _timestamped_log_command(args: list[Any], log_path: str) -> str:
     )
 
 
+def _redis_status_env(config: dict[str, Any]) -> list[str]:
+    """Return environment assignments for GNSS latest-status forwarding."""
+
+    redis_status = config.get("redis_status") or {}
+    enabled = bool(redis_status.get("enabled", False))
+    env = [f"GNSS_REDIS_STATUS_ENABLED={'1' if enabled else '0'}"]
+    if redis_status.get("addr"):
+        env.append(f"GNSS_REDIS_STATUS_GRPC_ADDR={redis_status['addr']}")
+    if redis_status.get("device_type"):
+        env.append(f"GNSS_REDIS_STATUS_DEVICE_TYPE={redis_status['device_type']}")
+    return env
+
+
 def _screen_grep_pattern(screen_name: str) -> str:
     """Return a screen -ls grep pattern for an exact screen session name."""
 
@@ -988,6 +1001,7 @@ def _server_launch_script(server_status: dict[str, Any], run_stamp: str) -> tupl
     if resolved.get("receiver_manifest"):
         server_args.extend(["--config", resolved["receiver_manifest"]])
 
+    server_args = ["env", *_redis_status_env(server), *server_args]
     inner = _timestamped_log_command(server_args, log_path)
     script = "\n".join(
         [
