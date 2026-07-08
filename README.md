@@ -293,6 +293,62 @@ Common settings include:
 Different hosts can use different repo paths, Python environments, log
 directories, and telemetry directories. This is expected.
 
+### Local Agents
+
+The GNSS server always runs on the machine where `gnss_orchestrator.py` is
+invoked. A node can run its agent on that same machine by setting:
+
+```json5
+"local": true
+```
+
+Local nodes do not require `host` or `ssh_user`. Status checks, receiver
+discovery, register verification, Bodnar configuration, agent start/stop, and
+log compression are run directly instead of through SSH.
+
+Example of a fully local server and receiver deployment:
+
+```json5
+"server": {
+  "daq_name": "RAL",
+  "python": "/home/bgodfrey/miniconda3/envs/py314/bin/python",
+  "repo": "/home/bgodfrey/U-Blox_F9T_Config",
+  "script": "server_v1.py",
+  "logdir": "/home/bgodfrey/gnss_logging",
+  "telem_dir": "/home/bgodfrey/gnss_telem",
+  "screen": "gnss_server",
+  "bind_addr": "127.0.0.1:50054",
+  "verbosity": 2
+},
+
+"nodes": {
+  "ral": {
+    "daq_name": "RAL",
+    "local": true,
+    "present": true,
+    "required": false,
+    "python": "/home/bgodfrey/miniconda3/envs/py314/bin/python",
+    "repo": "/home/bgodfrey/U-Blox_F9T_Config",
+    "agent_script": "agent_v1.py",
+    "find_ublox_script": "gnss_scripts/find_ublox.sh",
+    "logdir": "/home/bgodfrey/gnss_logging",
+    "telem_dir": "/home/bgodfrey/gnss_telem",
+    "cast_addr": "127.0.0.1:50054",
+    "ctrl_addr": "127.0.0.1:50054",
+    "verbosity": 2
+  }
+}
+```
+
+The server `bind_addr` and the local agent's `cast_addr` and `ctrl_addr` must
+use the same port. Binding the server to `127.0.0.1` restricts it to local
+agents. Use `0.0.0.0` when remote agents must also connect.
+
+Setting `local: true` does not mean "run on the machine named by `host`." It
+always means "run on the current orchestration host." If the agent belongs on
+another machine, leave `local` false or omit it and configure `host` and
+`ssh_user` for SSH.
+
 ## Receiver Manifests
 
 Receiver register settings live in JSON5 manifest files. The current main
