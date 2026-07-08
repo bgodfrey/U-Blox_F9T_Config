@@ -67,8 +67,9 @@ The intended way to operate the system is through:
 gnss_scripts/gnss_orchestrator.py
 ```
 
-The orchestrator reads a deployment config, starts and stops the GNSS server and
-remote agents, checks node readiness, optionally configures Leo Bodnar LBE-1420
+The orchestrator reads a deployment config, starts and stops the local GNSS
+server and local or remote agents, checks node readiness, optionally configures
+Leo Bodnar LBE-1420
 10 MHz references, and can verify receiver registers against a selected
 manifest.
 
@@ -266,14 +267,17 @@ Important sections:
 - `defaults`: shared values inherited by nodes unless overridden.
 - `modes`: maps `differential` and `absolute` to the corresponding receiver
   manifests.
-- `server`: local headnode server settings.
-- `nodes`: remote DAQ-node settings.
+- `server`: local headnode server settings. The orchestrator always launches
+  this process locally; `bind_addr` controls whether remote agents can connect.
+- `nodes`: local or remote DAQ-node settings.
 
 Common settings include:
 
 - `daq_name`: human-readable site or DAQ label, such as `WINTERS`.
-- `host`: SSH hostname, such as `panoseti-winter`.
-- `ssh_user`: remote user for SSH.
+- `local`: set to `true` for direct execution on the orchestration host; false
+  or omitted uses SSH.
+- `host`: SSH hostname for a remote node, such as `panoseti-winter`.
+- `ssh_user`: remote user for SSH; not required for a local node.
 - `python`: Python executable or conda-environment Python to run.
 - `repo`: location of this repo on that host.
 - `agent_script` / `server_script`: script paths relative to `repo` unless
