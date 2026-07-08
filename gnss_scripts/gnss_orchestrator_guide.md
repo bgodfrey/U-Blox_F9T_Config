@@ -6,7 +6,7 @@ start, and stop the GNSS server and GNSS agents across DAQ nodes.
 The orchestrator is meant to answer three practical questions:
 
 1. Is the GNSS deployment configured correctly?
-2. Are the remote DAQ nodes reachable and ready?
+2. Are the local and remote DAQ nodes reachable and ready?
 3. Can I start, stop, and verify the GNSS server/agents from one place?
 
 It does not replace the receiver manifest files. Instead, it sits one layer
@@ -233,8 +233,8 @@ Important top-level sections:
 
 - `defaults`: shared settings used by nodes unless they override them.
 - `modes`: maps timing modes to receiver manifests.
-- `server`: describes the local GNSS server process.
-- `nodes`: describes each remote DAQ node.
+- `server`: describes the GNSS server process, which always runs locally.
+- `nodes`: describes local and remote DAQ nodes.
 
 Bodnar settings can be placed in `defaults` and overridden per node. This is
 useful because the four DAQ nodes may keep the Bodnar repo in different paths.
@@ -312,15 +312,14 @@ the orchestrator starts the server and agents using absolute timing settings.
 
 ### Server Config
 
-The `server` section describes the machine running `server_v1.py`.
+The `server` section describes `server_v1.py`. The orchestrator always runs
+this process locally; it does not use SSH for server operations.
 
 Example:
 
 ```json5
 "server": {
   "daq_name": "panoseti-palomar",
-  "host": "localhost",
-  "ssh_user": "obs",
   "python": "/home/obs/miniconda3/envs/pygnss_39/bin/python",
   "repo": "/home/obs/U-Blox_F9T_Config",
   "script": "server_v1.py",
@@ -336,26 +335,27 @@ Example:
 Important fields:
 
 - `daq_name`: display name in status output.
-- `host`: server host. Usually `localhost`.
 - `python`: full path to the Python executable/environment.
-- `repo`: repo location on the server host.
+- `repo`: repo location on the local orchestration host.
 - `script`: server script path, usually `server_v1.py`.
 - `logdir`: where server logs go.
 - `telem_dir`: where server telemetry JSONL files go.
 - `screen`: screen session name.
-- `bind_addr`: gRPC bind address, for example `0.0.0.0:50051`.
+- `bind_addr`: gRPC bind address, for example `0.0.0.0:50051`. This controls
+  which interfaces accept agent connections, not where the server runs.
 - `verbosity`: passed to `server_v1.py` as `-v`.
 - `receiver_manifest`: optional explicit receiver manifest.
 
 ### Node Config
 
-The `nodes` section describes each remote DAQ node.
+The `nodes` section describes each local or remote DAQ node.
 
 Example:
 
 ```json5
 "winters": {
   "daq_name": "WINTERS",
+  "local": false,
   "host": "panoseti-winter",
   "present": true,
   "required": false,
@@ -386,6 +386,8 @@ Important fields:
 
 - Node key, for example `winters`: short inventory key used by `--node`.
 - `daq_name`: display name, for example `WINTERS`.
+- `local`: set to `true` to execute directly on the orchestration host. It
+  defaults to `false`, which uses SSH.
 - `host`: SSH hostname, for example `panoseti-winter`.
 - `present`: whether the node is included by default.
 - `required`: whether status failures should make the CLI exit nonzero.
@@ -402,7 +404,31 @@ Important fields:
 - `bodnar`: optional Leo Bodnar LBE-1420 configuration for the temporary 10 MHz
   reference.
 
-The node key, `daq_name`, and `host` are related but different:
+For a local agent, set `local: true` and omit `host` and `ssh_user`:
+
+```json5
+"headnode_receiver": {
+  "daq_name": "PALOMAR",
+  "local": true,
+  "present": true,
+  "python": "/home/obs/miniconda3/envs/pygnss_39/bin/python",
+  "repo": "/home/obs/U-Blox_F9T_Config",
+  "agent_script": "agent_v1.py",
+  "find_ublox_script": "gnss_scripts/find_ublox.sh",
+  "logdir": "/home/obs/gnss_logging",
+  "telem_dir": "/home/obs/gnss_telem",
+  "cast_addr": "127.0.0.1:50051",
+  "ctrl_addr": "127.0.0.1:50051",
+  "verbosity": 2
+}
+```
+
+Status checks, receiver discovery, register verification, Bodnar configuration,
+agent start/stop, and log compression all run directly for local nodes. The
+same operations use SSH when `local` is false or omitted.
+
+For remote nodes, the node key, `daq_name`, and `host` are related but
+different:
 
 - Key: stable config identifier, for example `winters`.
 - `daq_name`: display/manifest-facing name, for example `WINTERS`.

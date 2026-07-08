@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shlex
+import socket
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -69,6 +70,7 @@ class StartResult:
     status: str
     detail: str = ""
     required: bool = False
+    local: bool = False
     command: str = ""
     script: str = ""
 
@@ -84,6 +86,7 @@ class StopResult:
     status: str
     detail: str = ""
     required: bool = False
+    local: bool = False
     command: str = ""
     script: str = ""
 
@@ -246,6 +249,20 @@ def _run_bash(script: str, timeout: float) -> CommandResult:
     return _run(["bash", "-c", script], timeout=timeout)
 
 
+def _node_is_local(node: dict[str, Any]) -> bool:
+    """Return whether node commands should run on the orchestrator host."""
+
+    return _str_bool(node.get("local", False))
+
+
+def _node_host(node: dict[str, Any], key: str) -> str:
+    """Return the display host for a local or remote node."""
+
+    if _node_is_local(node):
+        return str(node.get("host") or socket.gethostname())
+    return str(node.get("host") or key)
+
+
 def _ssh_base(node: dict[str, Any]) -> list[str]:
     """Build the common SSH command prefix for a configured node.
 
@@ -269,6 +286,22 @@ def _ssh_base(node: dict[str, Any]) -> list[str]:
     return args
 
 
+def _node_command(node: dict[str, Any], script: str) -> str:
+    """Render a node Bash script as either a local command or an SSH command."""
+
+    if _node_is_local(node):
+        return "bash -c " + shlex.quote(script)
+    return _shell_join(_ssh_base(node) + ["bash -c " + shlex.quote(script)])
+
+
+def _node_run(node: dict[str, Any], script: str, timeout: float | None = None) -> CommandResult:
+    """Run a node Bash script locally or over SSH according to node.local."""
+
+    if _node_is_local(node):
+        return _run_bash(script, timeout=timeout or 10.0)
+    return _remote_run(node, script, timeout=timeout)
+
+
 def _remote_run(node: dict[str, Any], script: str, timeout: float | None = None) -> CommandResult:
     """Run a Bash snippet on a remote node over SSH.
 
@@ -287,16 +320,17 @@ def _remote_run(node: dict[str, Any], script: str, timeout: float | None = None)
     return _run(_ssh_base(node) + ["bash -c " + shlex.quote(script)], timeout=timeout)
 
 
-def _remote_preflight_script(paths: dict[str, str]) -> str:
-    """Build one remote Bash script for all node preflight checks."""
+def _node_preflight_script(paths: dict[str, str], *, local: bool) -> str:
+    """Build one Bash script for all local or remote node preflight checks."""
 
+    prefix = "local" if local else "remote"
     checks = [
-        ("remote -x " + paths["python"], "-x", paths["python"], paths["python"]),
-        ("remote -d " + paths["repo"], "-d", paths["repo"], paths["repo"]),
-        ("remote -f " + paths["agent_script"], "-f", paths["agent_script"], paths["agent_script"]),
-        ("remote -x " + paths["find_ublox_script"], "-x", paths["find_ublox_script"], paths["find_ublox_script"]),
-        ("remote logdir parent exists", "-d", os.path.dirname(paths["logdir"]), os.path.dirname(paths["logdir"])),
-        ("remote telem_dir parent exists", "-d", os.path.dirname(paths["telem_dir"]), os.path.dirname(paths["telem_dir"])),
+        (f"{prefix} -x " + paths["python"], "-x", paths["python"], paths["python"]),
+        (f"{prefix} -d " + paths["repo"], "-d", paths["repo"], paths["repo"]),
+        (f"{prefix} -f " + paths["agent_script"], "-f", paths["agent_script"], paths["agent_script"]),
+        (f"{prefix} -x " + paths["find_ublox_script"], "-x", paths["find_ublox_script"], paths["find_ublox_script"]),
+        (f"{prefix} logdir parent exists", "-d", os.path.dirname(paths["logdir"]), os.path.dirname(paths["logdir"])),
+        (f"{prefix} telem_dir parent exists", "-d", os.path.dirname(paths["telem_dir"]), os.path.dirname(paths["telem_dir"])),
     ]
 
     lines = [
@@ -334,8 +368,8 @@ def _remote_preflight_script(paths: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
-def _remote_register_verify_script(node: dict[str, Any], manifest_path: str, role: str | None, port: str | None = None) -> str:
-    """Build a remote command that verifies manifest registers."""
+def _register_verify_script(node: dict[str, Any], manifest_path: str, role: str | None, port: str | None = None) -> str:
+    """Build a node command that verifies manifest registers."""
 
     repo = str(node["repo"])
     verifier = _resolve_under_repo(repo, "gnss_scripts/verify_manifest_registers.py")
@@ -407,8 +441,8 @@ def _remote_bodnar_status_script(paths: dict[str, str], timeout_sec: float) -> s
     return "\n".join(lines)
 
 
-def _parse_remote_preflight(result: CommandResult) -> tuple[list[Check], bool | None, str | None]:
-    """Parse remote preflight output into checks and GNSS detection state."""
+def _parse_node_preflight(result: CommandResult) -> tuple[list[Check], bool | None, str | None]:
+    """Parse node preflight output into checks and GNSS detection state."""
 
     checks: list[Check] = []
     gnss_detected: bool | None = None
@@ -686,7 +720,7 @@ def _server_status(config: dict[str, Any]) -> dict[str, Any]:
     checks = _check_required_fields(
         "server",
         server,
-        ["daq_name", "host", "python", "repo", "script", "logdir", "telem_dir", "screen", "bind_addr"],
+        ["daq_name", "python", "repo", "script", "logdir", "telem_dir", "screen", "bind_addr"],
     )
 
     # These checks are local because the GNSS server is expected to run on the
@@ -705,7 +739,8 @@ def _server_status(config: dict[str, Any]) -> dict[str, Any]:
         "kind": "server",
         "key": "server",
         "daq_name": server.get("daq_name", "server"),
-        "host": server.get("host", "localhost"),
+        "host": socket.gethostname(),
+        "local": True,
         "checks": checks,
         "resolved": {
             "python": server.get("python"),
@@ -743,6 +778,7 @@ def _node_status(
 
     node = _merge(defaults, raw_node)
     present = _present(node, True)
+    is_local = _node_is_local(node)
 
     # Resolve the paths that future start/stop commands will use. The status
     # command reports these resolved values so config mistakes are easy to spot.
@@ -755,26 +791,26 @@ def _node_status(
     bodnar_present = _present(bodnar, False)
     bodnar_paths = _bodnar_paths(defaults, node)
 
-    # These fields are the minimum needed to start an agent in the future:
-    # SSH target, Python executable, repo/script locations, gRPC addresses, and
-    # logging/telemetry destinations.
+    # These fields are the minimum needed to start an agent. Remote nodes also
+    # require an SSH target; local nodes use paths on the orchestrator host.
+    required_fields = [
+        "daq_name",
+        "python",
+        "repo",
+        "agent_script",
+        "find_ublox_script",
+        "logdir",
+        "telem_dir",
+        "cast_addr",
+        "ctrl_addr",
+        "verbosity",
+    ]
+    if not is_local:
+        required_fields[1:1] = ["host", "ssh_user"]
     checks = _check_required_fields(
         f"nodes.{key}",
         node,
-        [
-            "daq_name",
-            "host",
-            "ssh_user",
-            "python",
-            "repo",
-            "agent_script",
-            "find_ublox_script",
-            "logdir",
-            "telem_dir",
-            "cast_addr",
-            "ctrl_addr",
-            "verbosity",
-        ],
+        required_fields,
     )
 
     gnss_detected: bool | None = None
@@ -794,21 +830,21 @@ def _node_status(
 
     if not present:
         checks.append(Check("node present", True, "not present; remote checks skipped"))
-    elif local_only:
+    elif local_only and not is_local:
         # Local-only mode is useful during config editing and CI because it does
         # not require network access or SSH keys.
         checks.append(Check("remote checks", True, "skipped by --local-only"))
         if check_bodnar and bodnar_present:
             checks.append(Check("bodnar remote checks", True, "skipped by --local-only"))
     else:
-        # First prove SSH works. If it does not, the remaining remote path checks
-        # would all fail for the same reason and make the report noisier.
-        checks.append(Check("ssh reachable", False, "not checked"))
-        ssh_result = _remote_run(node, "true")
-        checks[-1] = Check("ssh reachable", ssh_result.returncode == 0, _format_cmd_result(ssh_result))
+        # Prove the execution transport works before running the combined
+        # filesystem and hardware preflight.
+        transport_name = "local execution" if is_local else "ssh reachable"
+        transport_result = _node_run(node, "true")
+        checks.append(Check(transport_name, transport_result.returncode == 0, _format_cmd_result(transport_result)))
 
-        if ssh_result.returncode == 0:
-            preflight_script = _remote_preflight_script(
+        if transport_result.returncode == 0:
+            preflight_script = _node_preflight_script(
                 {
                     "python": str(node["python"]),
                     "repo": repo,
@@ -816,18 +852,19 @@ def _node_status(
                     "find_ublox_script": find_ublox,
                     "logdir": logdir,
                     "telem_dir": telem_dir,
-                }
+                },
+                local=is_local,
             )
-            preflight_result = _remote_run(node, preflight_script, timeout=20.0)
-            remote_checks, gnss_detected, gnss_port = _parse_remote_preflight(preflight_result)
-            checks.extend(remote_checks)
+            preflight_result = _node_run(node, preflight_script, timeout=20.0)
+            node_checks, gnss_detected, gnss_port = _parse_node_preflight(preflight_result)
+            checks.extend(node_checks)
 
             if check_bodnar and bodnar_present:
                 bodnar_script = _remote_bodnar_status_script(
                     bodnar_paths,
                     float(bodnar.get("timeout_sec", 20.0)),
                 )
-                bodnar_result = _remote_run(node, bodnar_script, timeout=float(bodnar.get("timeout_sec", 20.0)) + 10.0)
+                bodnar_result = _node_run(node, bodnar_script, timeout=float(bodnar.get("timeout_sec", 20.0)) + 10.0)
                 bodnar_checks, bodnar_detected = _parse_bodnar_status(bodnar_result)
                 checks.extend(bodnar_checks)
 
@@ -836,8 +873,8 @@ def _node_status(
                 manifest = str(settings.get("receiver_manifest") or "manifest_f9t.json5")
                 manifest_path = _resolve_under_repo(repo, manifest)
                 role = "timing_only" if settings.get("timing_mode") == "absolute" else None
-                verify_script = _remote_register_verify_script(node, manifest_path, role, gnss_port)
-                verify_result = _remote_run(node, verify_script, timeout=90.0)
+                verify_script = _register_verify_script(node, manifest_path, role, gnss_port)
+                verify_result = _node_run(node, verify_script, timeout=90.0)
                 verify_check, register_verify_report = _parse_register_verify(verify_result)
                 checks.append(verify_check)
 
@@ -845,7 +882,8 @@ def _node_status(
         "kind": "node",
         "key": key,
         "daq_name": node.get("daq_name", key),
-        "host": node.get("host", key),
+        "host": _node_host(node, key),
+        "local": is_local,
         "present": present,
         "required": _str_bool(node.get("required", False)),
         "gnss_detected": gnss_detected,
@@ -862,6 +900,7 @@ def _node_status(
             "cast_addr": node.get("cast_addr"),
             "ctrl_addr": node.get("ctrl_addr"),
             "verbosity": node.get("verbosity"),
+            "local": is_local,
             "bodnar": {
                 "present": bodnar_present,
                 "required": _str_bool(bodnar.get("required", False)),
@@ -1031,6 +1070,7 @@ def _start_server(config: dict[str, Any], *, dry_run: bool, mode: str = "differe
             status="failed",
             detail="server preflight failed",
             required=True,
+            local=True,
             command=command,
             script=script,
         )
@@ -1044,6 +1084,7 @@ def _start_server(config: dict[str, Any], *, dry_run: bool, mode: str = "differe
             status="dry-run",
             detail=f"would start screen {server.get('screen')} in {server.get('timing_mode')} mode with log {log_path}",
             required=True,
+            local=True,
             command=command,
             script=script,
         )
@@ -1058,13 +1099,14 @@ def _start_server(config: dict[str, Any], *, dry_run: bool, mode: str = "differe
         status="started" if ok else "failed",
         detail=f"log {log_path}" if ok else _format_cmd_result(result),
         required=True,
+        local=True,
         command=command,
         script=script,
     )
 
 
-def _remote_agent_launch_script(node_status: dict[str, Any], run_stamp: str) -> tuple[str, str]:
-    """Build the remote Bash script that starts one GNSS agent in screen."""
+def _agent_launch_script(node_status: dict[str, Any], run_stamp: str) -> tuple[str, str]:
+    """Build the Bash script that starts one GNSS agent in screen."""
 
     node = node_status["config"]
     resolved = node_status["resolved"]
@@ -1114,13 +1156,14 @@ def _start_node(
     dry_run: bool,
     run_stamp: str,
 ) -> StartResult:
-    """Start one remote GNSS agent, or describe the action in dry-run mode."""
+    """Start one local or remote GNSS agent, or describe a dry run."""
 
     node_status = _node_status(key, raw_node, defaults, local_only=False, check_bodnar=False)
     node = _merge(defaults, raw_node)
+    is_local = _node_is_local(node)
     node_status["config"] = node
-    script, log_path = _remote_agent_launch_script(node_status, run_stamp)
-    command = _shell_join(_ssh_base(node) + ["bash -c " + shlex.quote(script)])
+    script, log_path = _agent_launch_script(node_status, run_stamp)
+    command = _node_command(node, script)
     required = _str_bool(node.get("required", False))
     start_only_if_receiver_detected = _str_bool(node.get("start_only_if_receiver_detected", True))
 
@@ -1133,6 +1176,7 @@ def _start_node(
             status="skipped",
             detail="GNSS receiver not detected",
             required=required,
+            local=is_local,
             command=command,
             script=script,
         )
@@ -1146,6 +1190,7 @@ def _start_node(
             status="failed",
             detail="node preflight failed",
             required=required,
+            local=is_local,
             command=command,
             script=script,
         )
@@ -1159,11 +1204,12 @@ def _start_node(
             status="dry-run",
             detail=f"would start screen {node.get('agent_screen')} with log {log_path}",
             required=required,
+            local=is_local,
             command=command,
             script=script,
         )
 
-    result = _remote_run(node, script, timeout=20.0)
+    result = _node_run(node, script, timeout=20.0)
     ok = result.returncode == 0
     return StartResult(
         kind="node",
@@ -1173,13 +1219,14 @@ def _start_node(
         status="started" if ok else "failed",
         detail=f"log {log_path}" if ok else _format_cmd_result(result),
         required=required,
+        local=is_local,
         command=command,
         script=script,
     )
 
 
 def _bodnar_configure_script(paths: dict[str, str], bodnar: dict[str, Any]) -> str:
-    """Build a remote script that configures a Leo Bodnar LBE-1420."""
+    """Build a node script that configures a Leo Bodnar LBE-1420."""
 
     commands = ["set -e", f"cd {shlex.quote(paths['repo'])}"]
     out1_enabled = bodnar.get("out1_enabled")
@@ -1201,18 +1248,19 @@ def _configure_bodnar(
     *,
     dry_run: bool,
 ) -> StartResult:
-    """Configure one remote Leo Bodnar receiver, or describe the action."""
+    """Configure one local or remote Leo Bodnar receiver."""
 
     node = _merge(defaults, raw_node)
     bodnar = _bodnar_config(defaults, node)
     paths = _bodnar_paths(defaults, node)
     present = _present(bodnar, False)
     required = _str_bool(bodnar.get("required", False))
+    is_local = _node_is_local(node)
     daq_name = str(node.get("daq_name", key))
-    host = str(node.get("host", key))
+    host = _node_host(node, key)
 
     script = _bodnar_configure_script(paths, bodnar)
-    command = _shell_join(_ssh_base(node) + ["bash -c " + shlex.quote(script)])
+    command = _node_command(node, script)
     out1 = bodnar.get("out1_enabled")
     out1_detail = f", out1={'on' if _str_bool(out1) else 'off'}" if out1 is not None else ""
     detail = f"{bodnar.get('frequency_hz')} Hz, gnss={bodnar.get('gnss')}{out1_detail}"
@@ -1226,6 +1274,7 @@ def _configure_bodnar(
             status="skipped",
             detail="Bodnar not present",
             required=required,
+            local=is_local,
             command=command,
             script=script,
         )
@@ -1239,25 +1288,28 @@ def _configure_bodnar(
             status="dry-run",
             detail=f"would configure Bodnar {detail}",
             required=required,
+            local=is_local,
             command=command,
             script=script,
         )
 
-    ssh_result = _remote_run(node, "true")
-    if ssh_result.returncode != 0:
+    transport_result = _node_run(node, "true")
+    if transport_result.returncode != 0:
         return StartResult(
             kind="bodnar",
             key=key,
             daq_name=daq_name,
             host=host,
             status="failed",
-            detail="ssh unreachable: " + _format_cmd_result(ssh_result),
+            detail=("local execution failed: " if is_local else "ssh unreachable: ")
+            + _format_cmd_result(transport_result),
             required=required,
+            local=is_local,
             command=command,
             script=script,
         )
 
-    result = _remote_run(node, script, timeout=float(bodnar.get("timeout_sec", 20.0)) + 20.0)
+    result = _node_run(node, script, timeout=float(bodnar.get("timeout_sec", 20.0)) + 20.0)
     ok = result.returncode == 0
     return StartResult(
         kind="bodnar",
@@ -1267,6 +1319,7 @@ def _configure_bodnar(
         status="configured" if ok else "failed",
         detail=detail if ok else _format_cmd_result(result),
         required=required,
+        local=is_local,
         command=command,
         script=script,
     )
@@ -1281,7 +1334,7 @@ def start_gnss(
     mode: str = "differential",
     configure_bodnar: bool = False,
 ) -> dict[str, Any]:
-    """Start the GNSS server and configured remote agents.
+    """Start the local GNSS server and configured local/remote agents.
 
     Args:
         config_path: Deployment inventory path.
@@ -1320,10 +1373,11 @@ def start_gnss(
                         kind="node",
                         key=key,
                         daq_name=str(node.get("daq_name", key)),
-                        host=str(node.get("host", key)),
+                        host=_node_host(node, key),
                         status="skipped",
                         detail="required Bodnar configuration failed",
                         required=_str_bool(node.get("required", False)),
+                        local=_node_is_local(node),
                     )
                 )
                 continue
@@ -1445,6 +1499,7 @@ def _stop_server(config: dict[str, Any], *, dry_run: bool) -> StopResult:
             status="dry-run",
             detail=f"would stop screen {server.get('screen')} and process {server_status['resolved']['script']}",
             required=True,
+            local=True,
             command=command,
             script=script,
         )
@@ -1459,6 +1514,7 @@ def _stop_server(config: dict[str, Any], *, dry_run: bool) -> StopResult:
         status="stopped" if ok else "failed",
         detail=f"log {log_path}" if ok else _format_cmd_result(result),
         required=True,
+        local=True,
         command=command,
         script=script,
     )
@@ -1476,7 +1532,8 @@ def _node_stop_status(key: str, raw_node: dict[str, Any], defaults: dict[str, An
         "kind": "node",
         "key": key,
         "daq_name": node.get("daq_name", key),
-        "host": node.get("host", key),
+        "host": _node_host(node, key),
+        "local": _node_is_local(node),
         "required": _str_bool(node.get("required", False)),
         "resolved": {
             "agent_script": agent_script,
@@ -1487,8 +1544,8 @@ def _node_stop_status(key: str, raw_node: dict[str, Any], defaults: dict[str, An
     }
 
 
-def _remote_agent_stop_script(node_status: dict[str, Any]) -> tuple[str, str]:
-    """Build the remote Bash script that stops one GNSS agent."""
+def _agent_stop_script(node_status: dict[str, Any]) -> tuple[str, str]:
+    """Build the Bash script that stops one GNSS agent."""
 
     node = node_status["config"]
     resolved = node_status["resolved"]
@@ -1505,12 +1562,13 @@ def _stop_node(
     *,
     dry_run: bool,
 ) -> StopResult:
-    """Stop one remote GNSS agent, or describe the action in dry-run mode."""
+    """Stop one local or remote GNSS agent, or describe a dry run."""
 
     node_status = _node_stop_status(key, raw_node, defaults)
     node = node_status["config"]
-    script, log_path = _remote_agent_stop_script(node_status)
-    command = _shell_join(_ssh_base(node) + ["bash -c " + shlex.quote(script)])
+    is_local = _node_is_local(node)
+    script, log_path = _agent_stop_script(node_status)
+    command = _node_command(node, script)
     required = _str_bool(node.get("required", False))
 
     if dry_run:
@@ -1522,25 +1580,28 @@ def _stop_node(
             status="dry-run",
             detail=f"would stop screen {node.get('agent_screen')} and process {node_status['resolved']['agent_script']}",
             required=required,
+            local=is_local,
             command=command,
             script=script,
         )
 
-    ssh_result = _remote_run(node, "true")
-    if ssh_result.returncode != 0:
+    transport_result = _node_run(node, "true")
+    if transport_result.returncode != 0:
         return StopResult(
             kind="node",
             key=key,
             daq_name=str(node_status["daq_name"]),
             host=str(node_status["host"]),
             status="failed",
-            detail="ssh unreachable: " + _format_cmd_result(ssh_result),
+            detail=("local execution failed: " if is_local else "ssh unreachable: ")
+            + _format_cmd_result(transport_result),
             required=required,
+            local=is_local,
             command=command,
             script=script,
         )
 
-    result = _remote_run(node, script, timeout=float(node.get("shutdown_grace_sec", 5)) + 10.0)
+    result = _node_run(node, script, timeout=float(node.get("shutdown_grace_sec", 5)) + 10.0)
     ok = result.returncode == 0
     return StopResult(
         kind="node",
@@ -1550,6 +1611,7 @@ def _stop_node(
         status="stopped" if ok else "failed",
         detail=f"log {log_path}" if ok else _format_cmd_result(result),
         required=required,
+        local=is_local,
         command=command,
         script=script,
     )
@@ -1621,6 +1683,7 @@ def _server_compress_logs(config: dict[str, Any], *, dry_run: bool) -> StopResul
             status="dry-run",
             detail="would gzip -9 server log and telemetry files",
             required=True,
+            local=True,
             command=command,
             script=script,
         )
@@ -1635,6 +1698,7 @@ def _server_compress_logs(config: dict[str, Any], *, dry_run: bool) -> StopResul
         status="compressed" if ok else "failed",
         detail=_format_cmd_result(result),
         required=True,
+        local=True,
         command=command,
         script=script,
     )
@@ -1647,14 +1711,15 @@ def _node_compress_logs(
     *,
     dry_run: bool,
 ) -> StopResult:
-    """Compress completed remote agent log/telemetry files."""
+    """Compress completed local or remote agent log/telemetry files."""
 
     node_status = _node_stop_status(key, raw_node, defaults)
     node = node_status["config"]
     resolved = node_status["resolved"]
     paths = [str(resolved["logdir"]), str(resolved["telem_dir"])]
     script = _compress_logs_script(paths)
-    command = _shell_join(_ssh_base(node) + ["bash -c " + shlex.quote(script)])
+    is_local = _node_is_local(node)
+    command = _node_command(node, script)
     required = _str_bool(node.get("required", False))
 
     if dry_run:
@@ -1666,25 +1731,28 @@ def _node_compress_logs(
             status="dry-run",
             detail="would gzip -9 agent log and telemetry files",
             required=required,
+            local=is_local,
             command=command,
             script=script,
         )
 
-    ssh_result = _remote_run(node, "true")
-    if ssh_result.returncode != 0:
+    transport_result = _node_run(node, "true")
+    if transport_result.returncode != 0:
         return StopResult(
             kind="compress",
             key=key,
             daq_name=str(node_status["daq_name"]),
             host=str(node_status["host"]),
             status="failed",
-            detail="ssh unreachable: " + _format_cmd_result(ssh_result),
+            detail=("local execution failed: " if is_local else "ssh unreachable: ")
+            + _format_cmd_result(transport_result),
             required=required,
+            local=is_local,
             command=command,
             script=script,
         )
 
-    result = _remote_run(node, script, timeout=float(node.get("compress_timeout_sec", 300.0)))
+    result = _node_run(node, script, timeout=float(node.get("compress_timeout_sec", 300.0)))
     ok = result.returncode == 0
     return StopResult(
         kind="compress",
@@ -1694,6 +1762,7 @@ def _node_compress_logs(
         status="compressed" if ok else "failed",
         detail=_format_cmd_result(result),
         required=required,
+        local=is_local,
         command=command,
         script=script,
     )
@@ -1795,8 +1864,12 @@ def _print_start(report: dict[str, Any]) -> None:
             print(f"  detail: {item.detail}")
         if report.get("dry_run") and item.script:
             if item.kind in {"node", "bodnar"}:
-                print(f"  target: ssh {item.host}")
-                print("  remote script:")
+                if item.local:
+                    print("  target: local")
+                    print("  local script:")
+                else:
+                    print(f"  target: ssh {item.host}")
+                    print("  remote script:")
             else:
                 print("  local script:")
             for line in item.script.splitlines():
@@ -1819,8 +1892,12 @@ def _print_stop(report: dict[str, Any]) -> None:
             print(f"  detail: {item.detail}")
         if report.get("dry_run") and item.script:
             if item.kind == "node" or (item.kind == "compress" and item.key != "server"):
-                print(f"  target: ssh {item.host}")
-                print("  remote script:")
+                if item.local:
+                    print("  target: local")
+                    print("  local script:")
+                else:
+                    print(f"  target: ssh {item.host}")
+                    print("  remote script:")
             else:
                 print("  local script:")
             for line in item.script.splitlines():

@@ -63,8 +63,6 @@
 
   "server": {
     "daq_name": "panoseti-palomar",
-    "host": "localhost",
-    "ssh_user": "obs",
     "python": "/home/obs/miniconda3/envs/pygnss_39/bin/python",
     "repo": "/home/obs/U-Blox_F9T_Config",
     "script": "server_v1.py",
@@ -86,6 +84,9 @@
     "winters": {
       "daq_name": "WINTERS",
       "host": "panoseti-winter",
+      // Set local=true for an agent attached directly to the orchestrator host.
+      // When omitted or false, the orchestrator runs this node over SSH.
+      "local": false,
       "present": true,
       "required": false,
       "ssh_user": "panoseti",
