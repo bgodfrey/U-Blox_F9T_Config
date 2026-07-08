@@ -12,8 +12,8 @@
     "ssh_batch_mode": true,
     "accept_new_host_keys": true,
 
-    "cast_addr": "10.200.146.1:50051",
-    "ctrl_addr": "10.200.146.1:50051",
+    "cast_addr": "10.200.146.1:50054",
+    "ctrl_addr": "10.200.146.1:50054",
     "verbosity": 2,
 
     "agent_screen": "gnss_agent",
@@ -69,7 +69,7 @@
     "logdir": "/home/obs/gnss_logging",
     "telem_dir": "/home/obs/gnss_telem",
     "screen": "gnss_server",
-    "bind_addr": "0.0.0.0:50051",
+    "bind_addr": "0.0.0.0:50054",
     "verbosity": 2,
 
     // Optional receiver-settings manifest passed to server_v1.py --config.
@@ -96,8 +96,8 @@
       "find_ublox_script": "/home/panoseti/U-Blox_F9T_Config/gnss_scripts/find_ublox.sh",
       "logdir": "/home/panoseti/gnss_logging",
       "telem_dir": "/home/panoseti/gnss_telem",
-      "cast_addr": "10.200.146.1:50051",
-      "ctrl_addr": "10.200.146.1:50051",
+      "cast_addr": "10.200.146.1:50054",
+      "ctrl_addr": "10.200.146.1:50054",
       "verbosity": 2,
       "bodnar": {
         "present": true,
@@ -123,8 +123,8 @@
       "find_ublox_script": "/home/panoseti/Codebase/U-Blox_F9T_Config/gnss_scripts/find_ublox.sh",
       "logdir": "/home/panoseti/gnss_logging",
       "telem_dir": "/home/panoseti/gnss_telem",
-      "cast_addr": "10.200.146.1:50051",
-      "ctrl_addr": "10.200.146.1:50051",
+      "cast_addr": "10.200.146.1:50054",
+      "ctrl_addr": "10.200.146.1:50054",
       "verbosity": 2,
       "bodnar": {
         "present": true,
@@ -150,8 +150,8 @@
       "find_ublox_script": "/home/panoseti/Codebase/U-Blox_F9T_Config/gnss_scripts/find_ublox.sh",
       "logdir": "/home/panoseti/gnss_logging",
       "telem_dir": "/home/panoseti/gnss_telem",
-      "cast_addr": "10.200.146.1:50051",
-      "ctrl_addr": "10.200.146.1:50051",
+      "cast_addr": "10.200.146.1:50054",
+      "ctrl_addr": "10.200.146.1:50054",
       "verbosity": 2,
       "bodnar": {
         "present": true,
@@ -177,8 +177,8 @@
       "find_ublox_script": "/home/panoseti/U-Blox_F9T_Config/gnss_scripts/find_ublox.sh",
       "logdir": "/home/panoseti/gnss_logging",
       "telem_dir": "/home/panoseti/gnss_telem",
-      "cast_addr": "10.200.146.1:50051",
-      "ctrl_addr": "10.200.146.1:50051",
+      "cast_addr": "10.200.146.1:50054",
+      "ctrl_addr": "10.200.146.1:50054",
       "verbosity": 2,
       "bodnar": {
         "present": false,
