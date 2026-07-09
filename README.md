@@ -287,6 +287,10 @@ Common settings include:
 - `verbosity`: script logging verbosity.
 - `logdir`: process log directory.
 - `telem_dir`: local telemetry JSONL directory.
+- `telemetry.max_file_mb`: rotate active telemetry files at this approximate
+  size; set to `0` or less to disable size rotation.
+- `telemetry.fsync_seconds`: flush every JSONL record and call `fsync` at most
+  this often; set to `0` or less to skip explicit `fsync`.
 - `present`: whether the node is normally included by orchestrator commands.
 - `bodnar`: optional LBE-1420 configuration.
 
@@ -405,6 +409,11 @@ control, or multi-node management matter, use `gnss_orchestrator.py` instead.
 Telemetry is written as JSON Lines (`.jsonl`). Each line is valid JSON and can
 be read with Python's built-in `json.loads`. Files may later be compressed with
 gzip; the content remains line-oriented JSON after decompression.
+
+While a telemetry file is actively being written, it uses a `.jsonl.active`
+suffix. On clean shutdown or rotation, it is finalized to `.jsonl`. This lets
+background compression skip live files while still making completed telemetry
+segments easy to copy, compress, and inspect.
 
 There are two telemetry locations:
 

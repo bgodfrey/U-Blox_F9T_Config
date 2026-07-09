@@ -259,6 +259,10 @@ The `defaults` section includes common values such as:
   "server_script": "server_v1.py",
   "logdir": "logging",
   "telem_dir": "telem",
+  "telemetry": {
+    "max_file_mb": 128,
+    "fsync_seconds": 5
+  },
   "find_ublox_script": "gnss_scripts/find_ublox.sh",
   "bodnar": {
     "present": true,
@@ -276,6 +280,18 @@ The `defaults` section includes common values such as:
 ```
 
 Node-specific entries can override these values.
+
+Telemetry rotation settings are passed through to `agent_v1.py` and
+`server_v1.py` when the orchestrator starts them:
+
+- `telemetry.max_file_mb`: rotate active telemetry files when they grow beyond
+  this approximate size. Use `0` or less to disable size-based rotation.
+- `telemetry.fsync_seconds`: write and flush every JSONL record, then call
+  `fsync` at most this often. Use `0` or less to skip explicit `fsync`.
+
+Active telemetry files use a `.jsonl.active` suffix. Clean shutdown and
+rotation finalize them to `.jsonl`, which lets compression jobs ignore live
+files and operate only on completed telemetry segments.
 
 ### Modes
 
@@ -988,6 +1004,29 @@ the agent for that node and try again.
 
 ## Recommended Workflows
 
+Before running any orchestrator command, activate the Python environment that
+contains the orchestrator dependencies, including `json5`. For example:
+
+```bash
+conda activate pygnss_312
+```
+
+For a `uv`-managed environment, either activate its virtual environment:
+
+```bash
+source .venv/bin/activate
+```
+
+or run commands through `uv`:
+
+```bash
+uv run python gnss_orchestrator.py status --config ./gnss_deployment.json5
+```
+
+The environment used to invoke the orchestrator is separate from the `python`
+paths in `gnss_deployment.json5`. Those configured paths determine which Python
+executables launch the server, agents, register verifier, and Bodnar utility.
+
 ### Before Starting a Run
 
 1. Check config and reachability:
@@ -1031,6 +1070,40 @@ the agent for that node and try again.
    ```bash
    python gnss_orchestrator.py status --verify-registers
    ```
+
+### At the End of a Run
+
+Stop all agents and the server, then compress completed process logs and
+telemetry files:
+
+```bash
+python gnss_orchestrator.py stop \
+  --config ./gnss_deployment.json5 \
+  --compress-logs
+```
+
+To inspect the stop and compression commands without executing them:
+
+```bash
+python gnss_orchestrator.py stop \
+  --config ./gnss_deployment.json5 \
+  --compress-logs \
+  --dry-run
+```
+
+When `--node` is omitted, the command stops all configured agents followed by
+the local server. It then runs `gzip -9` on completed `.log`, `.txt`, and
+`.jsonl` files in their configured log and telemetry directories. Existing
+`.gz` files are left unchanged.
+
+Stopping a single node does not stop the shared server:
+
+```bash
+python gnss_orchestrator.py stop \
+  --config ./gnss_deployment.json5 \
+  --node WINTERS \
+  --compress-logs
+```
 
 ### Switching to Absolute Timing Mode
 
@@ -1125,6 +1198,8 @@ Each launch-log line starts with a UTC timestamp, for example:
 ```
 
 The telemetry directory is where the GNSS telemetry data products go.
+Files being written have a `.jsonl.active` suffix; completed telemetry segments
+end in `.jsonl` and can be compressed later.
 
 Useful remote checks:
 

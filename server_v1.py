@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from logging_setup import setup_logging
+from gnss_scripts.rotating_jsonl import RotatingJsonlWriter
 from google.protobuf.struct_pb2 import Struct
 from google.protobuf.timestamp_pb2 import Timestamp
 from pathlib import Path
@@ -61,6 +62,8 @@ _START_STR = _START_TS.strftime("%Y%m%d_%H%M%SZ")
 
 TELEM_DIR   = REPO_ROOT / "telemetry"
 LOGGING_DIR = REPO_ROOT / "logging"
+TELEM_MAX_FILE_MB = 128.0
+TELEM_FSYNC_SECONDS = 5.0
 
 TELEM_SVC_ADDR = os.getenv("TELEM_SVC_ADDR", "127.0.0.1:50052")
 LOGGING_DIR.mkdir(parents=True, exist_ok=True)
@@ -68,6 +71,7 @@ LOGGING_DIR.mkdir(parents=True, exist_ok=True)
 
 _LOG_PATH_TELEM   = str(TELEM_DIR / f"telemetry_{_START_STR}.jsonl")
 _LOG_PATH_LOGGING = str(LOGGING_DIR / f"SERVER_{_START_STR}.txt")
+_telem_writer: RotatingJsonlWriter | None = None
 
 # Setup for a connection is given by
 #	. Role:  Controls whether a device sends out (base) or takes in (receiver) RTCM messages
@@ -99,23 +103,38 @@ LAST_SEEN = {}
 # ------------------------------ helpers -------------------------------------
 
 
-def configure_telemetry_dir(telem_dir: str | None) -> None:
+def configure_telemetry_dir(
+	telem_dir: str | None,
+	*,
+	telem_max_file_mb: float = TELEM_MAX_FILE_MB,
+	telem_fsync_seconds: float = TELEM_FSYNC_SECONDS,
+) -> None:
 	"""Set the server telemetry output directory before telemetry is logged."""
 
-	global TELEM_DIR, _LOG_PATH_TELEM
+	global TELEM_DIR, _LOG_PATH_TELEM, _telem_writer, TELEM_MAX_FILE_MB, TELEM_FSYNC_SECONDS
 	if telem_dir:
 		path = Path(telem_dir).expanduser()
 		if not path.is_absolute():
 			path = REPO_ROOT / path
 		TELEM_DIR = path
+	TELEM_MAX_FILE_MB = telem_max_file_mb
+	TELEM_FSYNC_SECONDS = telem_fsync_seconds
 	TELEM_DIR.mkdir(parents=True, exist_ok=True)
 	_LOG_PATH_TELEM = str(TELEM_DIR / f"telemetry_{_START_STR}.jsonl")
+	_telem_writer = RotatingJsonlWriter(
+		_LOG_PATH_TELEM,
+		max_bytes=int(max(0.0, TELEM_MAX_FILE_MB) * 1024 * 1024),
+		fsync_seconds=TELEM_FSYNC_SECONDS,
+	)
 
 
 # Exit cleanly on SIGINT/SIGTERM (Unix).
 def install_signal_handlers(stop_evt: asyncio.Event) -> None:
 	loop = asyncio.get_running_loop()
-	for sig in (signal.SIGINT, signal.SIGTERM):
+	signals = [signal.SIGINT, signal.SIGTERM]
+	if hasattr(signal, "SIGHUP"):
+		signals.append(signal.SIGHUP)
+	for sig in signals:
 		with contextlib.suppress(NotImplementedError):
 			loop.add_signal_handler(sig, stop_evt.set)
 
@@ -123,8 +142,8 @@ def install_signal_handlers(stop_evt: asyncio.Event) -> None:
 # Append a compact JSONL record (easy to ingest/grep).
 def jlog(kind: str, device_id: str, alias: str = "", **payload) -> None:
 	rec = {"ts": int(time.time() * 1000), "kind": kind, "device_id": device_id, "alias": alias, **payload}
-	with open(_LOG_PATH_TELEM, "a", encoding="utf-8") as f:
-		f.write(json.dumps(rec, separators=(",", ":")) + "\n")
+	if _telem_writer:
+		_telem_writer.write(rec)
 
 
 
@@ -135,6 +154,8 @@ def parse_args():
 	p.add_argument("--log-file", default="", help="optional file path")
 	p.add_argument("--timing-mode", choices=["differential", "absolute"], default="differential", help="runtime timing mode")
 	p.add_argument("--telem-dir", default=str(TELEM_DIR), help="directory for server telemetry JSONL output")
+	p.add_argument("--telem-max-file-mb", type=float, default=TELEM_MAX_FILE_MB, help="rotate server telemetry after this many MB; <=0 disables size rotation")
+	p.add_argument("--telem-fsync-seconds", type=float, default=TELEM_FSYNC_SECONDS, help="fsync server telemetry at most this often; <=0 disables fsync")
 	p.add_argument("-v", "--verbosity", type=int, default=2, help="0=errors, 1=warn, 2=info, 3=debug")
 	return p.parse_args()
 
@@ -780,13 +801,19 @@ async def serve(addr: str = "0.0.0.0:50051", timing_mode: str = "differential") 
 	# Await server termination task (ignore exceptions during final cleanup)
 	with contextlib.suppress(Exception):
 		await wait_task
+	if _telem_writer:
+		_telem_writer.close()
 
 
 if __name__ == "__main__":
 	# Entrypoint: Run the server’s main function and allow KeyboardInterrupt to exit cleanly.
 	try:
 		args = parse_args()
-		configure_telemetry_dir(args.telem_dir)
+		configure_telemetry_dir(
+			args.telem_dir,
+			telem_max_file_mb=args.telem_max_file_mb,
+			telem_fsync_seconds=args.telem_fsync_seconds,
+		)
 		setup_logging(args.verbosity, log_file = _LOG_PATH_LOGGING or None, console = False)
 		log = logging.getLogger("server")   # or "server"
 		log.info("starting up…")
@@ -806,3 +833,6 @@ if __name__ == "__main__":
 		asyncio.run(serve(args.ip, timing_mode=args.timing_mode))
 	except KeyboardInterrupt:
 		pass
+	finally:
+		if _telem_writer:
+			_telem_writer.close()

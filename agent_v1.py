@@ -39,6 +39,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from grpc.aio import AioRpcError
 from logging_setup import setup_logging
+from gnss_scripts.rotating_jsonl import RotatingJsonlWriter
 from serial import Serial
 # Requires:
 from pyubx2.exceptions import UBXMessageError, UBXParseError, UBXStreamError, UBXTypeError
@@ -74,6 +75,8 @@ NAV_SAT_STALE_MS = 10000          # satellite diagnostics are less critical
 TELEM_STALE_WARN_S = 30.0         # throttle stale telemetry warnings
 TELEM_DIR  = "./telem"  # or "/var/log/f9t_telem.jsonl"
 LOG_DIR = "./logging"
+TELEM_MAX_FILE_MB = 128.0
+TELEM_FSYNC_SECONDS = 5.0
 
 # one fixed timestamp for this agent run
 _START_TS  = datetime.now(timezone.utc)
@@ -81,6 +84,7 @@ _START_STR = _START_TS.strftime("%Y%m%d_%H%M%SZ")
 
 _TELEM_PATH = os.path.join(TELEM_DIR, f"UNKNOWN_{_START_STR}.jsonl")
 _LOG_PATH = os.path.join(LOG_DIR, f"UNKNOWN_{_START_STR}.txt")
+_telem_writer: Optional[RotatingJsonlWriter] = None
 
 # --- Global scope variables -------------------------
 log = logging.getLogger("agent")
@@ -130,7 +134,10 @@ This allows asyncio tasks to await stop_event.wait() for cooperative shutdown ac
 """
 def install_signal_handlers(stop_event: asyncio.Event) -> None:
 	loop = asyncio.get_running_loop()
-	for sig in (signal.SIGINT, signal.SIGTERM):
+	signals = [signal.SIGINT, signal.SIGTERM]
+	if hasattr(signal, "SIGHUP"):
+		signals.append(signal.SIGHUP)
+	for sig in signals:
 		try:
 			loop.add_signal_handler(sig, stop_event.set)
 		except NotImplementedError:
@@ -680,7 +687,7 @@ def set_telem_log_alias(alias: str, device_id: str = "") -> None:
 	Set (or rename to) a telemetry filename that includes an alias and start time.
 	Safe to call multiple times
 	"""
-	global _TELEM_PATH
+	global _TELEM_PATH, _telem_writer
 	alias_safe = _sanitize(alias, fallback=_sanitize(device_id) or "UNKNOWN")
 	
 	suffix = f"{alias_safe}-{device_id[-4:]}" if device_id else alias_safe
@@ -691,24 +698,15 @@ def set_telem_log_alias(alias: str, device_id: str = "") -> None:
 	if new_path == _TELEM_PATH:
 		return
 
-	# If we’ve already written to the old file, rename it. If not, this is just setting the initial path.
-	try:
-		if os.path.exists(_TELEM_PATH):
-			os.replace(_TELEM_PATH, new_path)
-	except Exception:
-		# If rename fails, leave the old path; next write will still succeed.
-		return
-
 	_TELEM_PATH = new_path
+	if _telem_writer:
+		_telem_writer.set_path(new_path)
 
 # Append one JSON line without blocking the event loop.
 async def _append_jsonl(record: dict):
-	line = json.dumps(record, separators=(",", ":")) + "\n"
-	path = _TELEM_PATH  # use the global current path
 	def _write():
-		os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-		with open(path, "a", encoding="utf-8") as f:
-			f.write(line)
+		if _telem_writer:
+			_telem_writer.write(record)
 	await asyncio.to_thread(_write)
 
 # ----------------------------------------------------------------------------
@@ -1739,24 +1737,38 @@ def parse_args():
 	p.add_argument("--ctrl_addr", default = None, help = "control service address (bidirectional)")
 	p.add_argument("--log-dir", default = None, help = "directory for agent log files")
 	p.add_argument("--telem-dir", default = None, help = "directory for local telemetry JSONL files")
+	p.add_argument("--telem-max-file-mb", type=float, default=TELEM_MAX_FILE_MB, help="rotate local telemetry after this many MB; <=0 disables size rotation")
+	p.add_argument("--telem-fsync-seconds", type=float, default=TELEM_FSYNC_SECONDS, help="fsync local telemetry at most this often; <=0 disables fsync")
 	p.add_argument("--log-file", default="", help="optional file path")
 	p.add_argument("--port", default = None, help = "optional port useful if multiple devices on a single computer")
 	p.add_argument("-v", "--verbosity", type=int, default=2, help="0=errors, 1=warn, 2=info, 3=debug")
 	return p.parse_args()
 
-def configure_runtime_dirs(log_dir: Optional[str] = None, telem_dir: Optional[str] = None) -> None:
+def configure_runtime_dirs(
+	log_dir: Optional[str] = None,
+	telem_dir: Optional[str] = None,
+	telem_max_file_mb: float = TELEM_MAX_FILE_MB,
+	telem_fsync_seconds: float = TELEM_FSYNC_SECONDS,
+) -> None:
 	"""Configure runtime log/telemetry directories before logging starts."""
-	global LOG_DIR, TELEM_DIR, _LOG_PATH, _TELEM_PATH
+	global LOG_DIR, TELEM_DIR, _LOG_PATH, _TELEM_PATH, _telem_writer, TELEM_MAX_FILE_MB, TELEM_FSYNC_SECONDS
 
 	if log_dir:
 		LOG_DIR = log_dir
 	if telem_dir:
 		TELEM_DIR = telem_dir
+	TELEM_MAX_FILE_MB = telem_max_file_mb
+	TELEM_FSYNC_SECONDS = telem_fsync_seconds
 
 	os.makedirs(LOG_DIR, exist_ok=True)
 	os.makedirs(TELEM_DIR, exist_ok=True)
 	_LOG_PATH = os.path.join(LOG_DIR, f"UNKNOWN_{_START_STR}.txt")
 	_TELEM_PATH = os.path.join(TELEM_DIR, f"UNKNOWN_{_START_STR}.jsonl")
+	_telem_writer = RotatingJsonlWriter(
+		_TELEM_PATH,
+		max_bytes=int(max(0.0, TELEM_MAX_FILE_MB) * 1024 * 1024),
+		fsync_seconds=TELEM_FSYNC_SECONDS,
+	)
 
 """
 Set (or rename to) a telemetry filename that includes alias + start time.
@@ -1809,7 +1821,12 @@ async def main():
 	try:
 		args = parse_args()
 		_VERBOSE_TELEM = args.verbosity >= 3
-		configure_runtime_dirs(args.log_dir, args.telem_dir)
+		configure_runtime_dirs(
+			args.log_dir,
+			args.telem_dir,
+			telem_max_file_mb=args.telem_max_file_mb,
+			telem_fsync_seconds=args.telem_fsync_seconds,
+		)
 
 
 		# Discover device and identity (optionally use provided port)
@@ -1896,6 +1913,9 @@ async def main():
 	except Exception as e:
 		log.exception("agent error: %s", e)
 		await asyncio.sleep(2.0)
+	finally:
+		if _telem_writer:
+			await asyncio.to_thread(_telem_writer.close)
 
 
 if __name__ == "__main__":

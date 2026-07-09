@@ -690,6 +690,23 @@ def _server_config(config: dict[str, Any]) -> dict[str, Any]:
     return server
 
 
+def _telemetry_runtime_args(config: dict[str, Any]) -> list[str]:
+    """Return telemetry rotation/flush CLI args for agent_v1.py/server_v1.py."""
+
+    telemetry = config.get("telemetry", {})
+    if not isinstance(telemetry, dict):
+        telemetry = {}
+
+    max_file_mb = telemetry.get("max_file_mb", config.get("telem_max_file_mb", 128))
+    fsync_seconds = telemetry.get("fsync_seconds", config.get("telem_fsync_seconds", 5))
+    return [
+        "--telem-max-file-mb",
+        str(max_file_mb),
+        "--telem-fsync-seconds",
+        str(fsync_seconds),
+    ]
+
+
 def _server_status(config: dict[str, Any]) -> dict[str, Any]:
     """Validate local server configuration and filesystem prerequisites.
 
@@ -1024,6 +1041,7 @@ def _server_launch_script(server_status: dict[str, Any], run_stamp: str) -> tupl
         "-v",
         server.get("verbosity", 2),
     ]
+    server_args.extend(_telemetry_runtime_args(server))
     if resolved.get("receiver_manifest"):
         server_args.extend(["--config", resolved["receiver_manifest"]])
 
@@ -1131,6 +1149,7 @@ def _agent_launch_script(node_status: dict[str, Any], run_stamp: str) -> tuple[s
         "-v",
         resolved["verbosity"],
     ]
+    agent_args.extend(_telemetry_runtime_args(node))
     inner = _timestamped_log_command(agent_args, log_path)
     script = "\n".join(
         [

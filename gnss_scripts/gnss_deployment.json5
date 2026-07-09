@@ -26,6 +26,15 @@
     "server_script": "server_v1.py",
     "logdir": "logging",
     "telem_dir": "telem",
+    "telemetry": {
+      // Rotate active telemetry files before they become large enough to be
+      // awkward to recover/copy/compress. Set <=0 to disable size rotation.
+      "max_file_mb": 128,
+
+      // Flush every JSONL record and fsync at most this often. Set <=0 to skip
+      // fsync and rely on normal OS buffering.
+      "fsync_seconds": 5
+    },
 
     // Receiver detection script. Keep this separate because some nodes may
     // keep gnss_scripts outside the U-Blox_F9T_Config repo.
