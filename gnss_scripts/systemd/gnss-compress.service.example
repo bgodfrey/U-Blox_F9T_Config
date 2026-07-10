@@ -1,0 +1,16 @@
+[Unit]
+Description=Compress completed GNSS telemetry and log files
+Documentation=file:/home/panoseti/U-Blox_F9T_Config/gnss_scripts/gnss_orchestrator_guide.md
+
+[Service]
+Type=oneshot
+
+# Keep this maintenance task gentle on DAQ nodes.
+Nice=19
+IOSchedulingClass=idle
+
+# Edit these paths per node if the repo or output directories differ. The
+# compressor uses only the Python standard library; replace /usr/bin/env python3
+# with a specific environment Python if your deployment prefers that.
+WorkingDirectory=/home/panoseti/U-Blox_F9T_Config
+ExecStart=/usr/bin/env python3 /home/panoseti/U-Blox_F9T_Config/gnss_scripts/compress_gnss_logs.py --dirs /home/panoseti/gnss_telem /home/panoseti/gnss_logging --older-than-minutes 60 --gzip-level 3 --max-files 20

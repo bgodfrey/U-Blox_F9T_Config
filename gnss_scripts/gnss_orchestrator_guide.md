@@ -969,6 +969,54 @@ Dry run is safe and shows the generated compression commands:
 python gnss_orchestrator.py stop --compress-logs --dry-run
 ```
 
+### Daytime Background Compression
+
+For continuous GNSS operation, use `gnss_scripts/compress_gnss_logs.py` as a
+separate maintenance task instead of compressing from inside the live agent. The
+script skips `.active` files, symlinks, recent files, and existing `.gz` files,
+so it can run while telemetry is still being accumulated.
+
+Example one-shot command on a DAQ node:
+
+```bash
+ionice -c3 nice -n 19 python /home/panoseti/U-Blox_F9T_Config/gnss_scripts/compress_gnss_logs.py \
+  --dirs /home/panoseti/gnss_telem /home/panoseti/gnss_logging \
+  --older-than-minutes 60 \
+  --gzip-level 3 \
+  --max-files 20
+```
+
+Systemd service/timer templates are provided in:
+
+```text
+gnss_scripts/systemd/gnss-compress.service.example
+gnss_scripts/systemd/gnss-compress.timer.example
+```
+
+Copy the examples into the local user-systemd directory, then edit the copied
+`gnss-compress.service` paths for each DAQ node. Keep the `.example` files in
+the repo unchanged so future `git pull` operations do not conflict with
+node-local paths.
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp gnss_scripts/systemd/gnss-compress.service.example ~/.config/systemd/user/gnss-compress.service
+cp gnss_scripts/systemd/gnss-compress.timer.example ~/.config/systemd/user/gnss-compress.timer
+nano ~/.config/systemd/user/gnss-compress.service
+systemctl --user daemon-reload
+systemctl --user enable --now gnss-compress.timer
+```
+
+Useful checks:
+
+```bash
+systemctl --user status gnss-compress.timer
+systemctl --user list-timers gnss-compress.timer
+journalctl --user -u gnss-compress.service -n 100
+```
+
+Use `compress_gnss_logs.py --dry-run` first to confirm what would be compressed.
+
 ## Direct Register Verifier
 
 The orchestrator usually runs the register verifier for you, but you can run it

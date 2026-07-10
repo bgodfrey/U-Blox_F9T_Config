@@ -257,6 +257,13 @@ python gnss_scripts/gnss_orchestrator.py stop --config gnss_scripts/gnss_deploym
 This runs `gzip -9` on completed `.log`, `.txt`, and `.jsonl` files in the
 configured log and telemetry directories. Existing `.gz` files are left alone.
 
+For continuous GNSS operation, use `gnss_scripts/compress_gnss_logs.py` from a
+daytime cron/systemd maintenance job. It skips live `.active` files and can be
+run with `ionice`/`nice` so compression does not compete with data acquisition.
+Systemd service/timer templates are available in `gnss_scripts/systemd/`; see
+[gnss_orchestrator_guide.md](gnss_scripts/gnss_orchestrator_guide.md) for
+installation commands.
+
 ## Deployment Config
 
 The deployment config is separate from the receiver manifests. It is the file

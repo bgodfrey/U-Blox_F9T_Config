@@ -1,0 +1,11 @@
+[Unit]
+Description=Run GNSS log compression during daytime
+
+[Timer]
+# Run every 30 minutes from 09:00 through 16:30 local system time.
+OnCalendar=*-*-* 09..16:00/30:00
+Persistent=true
+Unit=gnss-compress.service
+
+[Install]
+WantedBy=timers.target
