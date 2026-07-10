@@ -2,8 +2,9 @@
 """Compress completed GNSS log/telemetry files.
 
 This script is intended for cron/systemd maintenance jobs. It deliberately
-skips active files, symlinks, recent files, and already-compressed files so it
-can run while the GNSS agent/server continue writing telemetry.
+skips active files, symlinks, symlink targets, recent files, and
+already-compressed files so it can run while the GNSS agent/server continue
+writing telemetry.
 """
 
 from __future__ import annotations
@@ -18,6 +19,22 @@ from pathlib import Path
 
 
 COMPRESS_SUFFIXES = (".jsonl", ".log", ".txt")
+
+
+def symlink_targets(directory: Path) -> set[Path]:
+    """Return regular files currently referenced by symlinks in a directory."""
+
+    targets: set[Path] = set()
+    for path in directory.iterdir():
+        if not path.is_symlink():
+            continue
+        try:
+            target = path.resolve(strict=True)
+        except OSError:
+            continue
+        if target.is_file() and target.parent == directory.resolve():
+            targets.add(target)
+    return targets
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -64,9 +81,12 @@ def compression_candidates(
         directory = Path(raw_dir).expanduser()
         if not directory.is_dir():
             continue
+        protected_targets = symlink_targets(directory)
 
         for path in directory.iterdir():
             if not path.is_file() or path.is_symlink():
+                continue
+            if path.resolve() in protected_targets:
                 continue
             if path.name.endswith(".active") or path.suffix == ".gz":
                 continue
