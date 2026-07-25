@@ -1,0 +1,28 @@
+[Unit]
+Description=PANOSETI GNSS agent ({daq_name})
+Documentation=file:{repo}/gnss_scripts/gnss_orchestrator_guide.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={repo}
+
+# The orchestrator renders this from gnss_deployment.json5. Keep stdout/stderr
+# in journald; agent_v1.py owns the timestamped GNSS log/telemetry files.
+ExecStart={exec_start}
+
+Restart={restart}
+RestartSec={restart_sec}
+
+# Be polite to the DAQ host. The timing process is important, but data
+# acquisition should still have priority if the node is busy.
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

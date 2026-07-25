@@ -20,6 +20,31 @@
     "server_screen": "gnss_server",
     "shutdown_grace_sec": 5,
 
+    // Process-management defaults. "screen" preserves the current behavior;
+    // "systemd" is intended for persistent agent/server services that can
+    // restart after a crash or node reboot.
+    "process": {
+      "runner": "screen",
+      "systemd": {
+        // Use per-user systemd units under ~/.config/systemd/user rather than
+        // root-owned units under /etc/systemd/system.
+        "user_service": true,
+
+        // Enable the generated service when install-service is run. Reboot
+        // recovery still requires linger to be enabled once per node.
+        "enable_on_install": true,
+        "check_linger": true,
+
+        // Restart policy for persistent GNSS services.
+        "restart": "always",
+        "restart_sec": 10,
+
+        // Default unit names; nodes/server can override these if needed.
+        "agent_service_name": "gnss-agent.service",
+        "server_service_name": "gnss-server.service"
+      }
+    },
+
     // The orchestrator should use these relative names under each node's repo
     // unless an individual node overrides them.
     "agent_script": "agent_v1.py",
@@ -80,6 +105,12 @@
     "screen": "gnss_server",
     "bind_addr": "0.0.0.0:50054",
     "verbosity": 2,
+    "process": {
+      "runner": "screen",
+      "systemd": {
+        "service_name": "gnss-server.service"
+      }
+    },
 
     // Optional receiver-settings manifest passed to server_v1.py --config.
     // Leave null to use server_v1.py's default manifest_f9t.json5.
@@ -108,6 +139,12 @@
       "cast_addr": "10.200.146.1:50054",
       "ctrl_addr": "10.200.146.1:50054",
       "verbosity": 2,
+      "process": {
+        "runner": "screen",
+        "systemd": {
+          "service_name": "gnss-agent.service"
+        }
+      },
       "bodnar": {
         "present": true,
         "required": false,
@@ -135,6 +172,12 @@
       "cast_addr": "10.200.146.1:50054",
       "ctrl_addr": "10.200.146.1:50054",
       "verbosity": 2,
+      "process": {
+        "runner": "screen",
+        "systemd": {
+          "service_name": "gnss-agent.service"
+        }
+      },
       "bodnar": {
         "present": true,
         "required": false,
@@ -162,6 +205,12 @@
       "cast_addr": "10.200.146.1:50054",
       "ctrl_addr": "10.200.146.1:50054",
       "verbosity": 2,
+      "process": {
+        "runner": "screen",
+        "systemd": {
+          "service_name": "gnss-agent.service"
+        }
+      },
       "bodnar": {
         "present": true,
         "required": false,
@@ -189,6 +238,12 @@
       "cast_addr": "10.200.146.1:50054",
       "ctrl_addr": "10.200.146.1:50054",
       "verbosity": 2,
+      "process": {
+        "runner": "screen",
+        "systemd": {
+          "service_name": "gnss-agent.service"
+        }
+      },
       "bodnar": {
         "present": false,
         "required": false,

@@ -8,12 +8,14 @@ The status command is intentionally read-only:
 It validates the deployment inventory and checks local/remote prerequisites.
 The start command uses the same inventory and preflight checks before launching
 the GNSS server and agents in screen sessions. The stop command gracefully shuts
-those sessions down again.
+those sessions down again. The install-service command renders and installs
+systemd user units without starting them.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -84,6 +86,23 @@ class StopResult:
     daq_name: str
     host: str
     status: str
+    detail: str = ""
+    required: bool = False
+    local: bool = False
+    command: str = ""
+    script: str = ""
+
+
+@dataclass
+class InstallResult:
+    """One systemd user-service installation result."""
+
+    kind: str
+    key: str
+    daq_name: str
+    host: str
+    status: str
+    service_name: str
     detail: str = ""
     required: bool = False
     local: bool = False
@@ -705,6 +724,319 @@ def _telemetry_runtime_args(config: dict[str, Any]) -> list[str]:
         "--telem-fsync-seconds",
         str(fsync_seconds),
     ]
+
+
+def _process_config(defaults: dict[str, Any], item: dict[str, Any], kind: str) -> dict[str, Any]:
+    """Resolve nested process/systemd settings for a server or agent."""
+
+    default_process = defaults.get("process") or {}
+    item_process = item.get("process") or {}
+    process = dict(default_process)
+    process.update(item_process)
+
+    systemd = dict(default_process.get("systemd") or {})
+    systemd.update(item_process.get("systemd") or {})
+    default_name = systemd.get(f"{kind}_service_name", f"gnss-{kind}.service")
+    systemd.setdefault("service_name", default_name)
+    systemd.setdefault("user_service", True)
+    systemd.setdefault("enable_on_install", True)
+    systemd.setdefault("check_linger", True)
+    systemd.setdefault("restart", "always")
+    systemd.setdefault("restart_sec", 10)
+    process["systemd"] = systemd
+    process.setdefault("runner", "screen")
+    return process
+
+
+def _systemd_service_name(value: Any) -> str:
+    """Validate and normalize a configured systemd service filename."""
+
+    name = str(value or "")
+    if not re.fullmatch(r"[A-Za-z0-9_.:@-]+\.service", name):
+        raise ValueError(f"invalid systemd service name {name!r}")
+    return name
+
+
+def _systemd_exec(args: list[Any]) -> str:
+    """Render argv using systemd's ExecStart quoting rules."""
+
+    quoted: list[str] = []
+    for value in args:
+        text = str(value).replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"')
+        quoted.append(f'"{text}"')
+    return " ".join(quoted)
+
+
+def _require_config_values(label: str, values: dict[str, Any], names: list[str]) -> None:
+    """Raise a concise error when service rendering lacks required config."""
+
+    missing = [name for name in names if values.get(name) in {None, ""}]
+    if missing:
+        raise ValueError(f"{label} missing required service field(s): {', '.join(missing)}")
+
+
+def _systemd_restart_values(systemd: dict[str, Any]) -> tuple[str, float]:
+    """Validate the restart policy values inserted into a generated unit."""
+
+    restart = str(systemd.get("restart", "always"))
+    allowed = {
+        "no",
+        "on-success",
+        "on-failure",
+        "on-abnormal",
+        "on-watchdog",
+        "on-abort",
+        "always",
+    }
+    if restart not in allowed:
+        raise ValueError(f"invalid systemd restart policy {restart!r}")
+    try:
+        restart_sec = float(systemd.get("restart_sec", 10))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("systemd restart_sec must be a non-negative number") from exc
+    if restart_sec < 0:
+        raise ValueError("systemd restart_sec must be a non-negative number")
+    return restart, restart_sec
+
+
+def _render_systemd_template(template_name: str, values: dict[str, Any]) -> str:
+    """Render a repository-managed systemd unit template."""
+
+    template_path = SCRIPT_DIR / "systemd" / template_name
+    try:
+        template = template_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"could not read systemd template {template_path}: {exc}") from exc
+    return template.format(**values)
+
+
+def _telemetry_runtime_values(config: dict[str, Any]) -> tuple[Any, Any]:
+    """Return configured telemetry size and fsync values."""
+
+    args = _telemetry_runtime_args(config)
+    return args[1], args[3]
+
+
+def _render_agent_service(
+    key: str,
+    raw_node: dict[str, Any],
+    defaults: dict[str, Any],
+) -> tuple[dict[str, Any], str, str]:
+    """Resolve one node and render its GNSS agent systemd unit."""
+
+    node = _merge(defaults, raw_node)
+    process = _process_config(defaults, raw_node, "agent")
+    systemd = process["systemd"]
+    if not _str_bool(systemd.get("user_service", True)):
+        raise ValueError("install-service currently supports only systemd user services")
+
+    repo = str(node.get("repo") or "")
+    agent_script = _resolve_under_repo(repo, str(node.get("agent_script") or "agent_v1.py"))
+    logdir = _resolve_under_repo(repo, str(node.get("logdir") or "logging"))
+    telem_dir = _resolve_under_repo(repo, str(node.get("telem_dir") or "telem"))
+    max_file_mb, fsync_seconds = _telemetry_runtime_values(node)
+    required_values = {
+        "python": node.get("python"),
+        "repo": repo,
+        "agent_script": agent_script,
+        "cast_addr": node.get("cast_addr"),
+        "ctrl_addr": node.get("ctrl_addr"),
+        "logdir": logdir,
+        "telem_dir": telem_dir,
+    }
+    _require_config_values(
+        f"node {key}",
+        required_values,
+        list(required_values),
+    )
+    restart, restart_sec = _systemd_restart_values(systemd)
+    args = [
+        node.get("python"),
+        "-u",
+        agent_script,
+        "--cast_addr",
+        node.get("cast_addr"),
+        "--ctrl_addr",
+        node.get("ctrl_addr"),
+        "--log-dir",
+        logdir,
+        "--telem-dir",
+        telem_dir,
+        "--telem-max-file-mb",
+        max_file_mb,
+        "--telem-fsync-seconds",
+        fsync_seconds,
+        "-v",
+        node.get("verbosity", 2),
+    ]
+    service_name = _systemd_service_name(systemd.get("service_name"))
+    unit = _render_systemd_template(
+        "gnss-agent.service.template",
+        {
+            "daq_name": node.get("daq_name", key),
+            "repo": repo,
+            "exec_start": _systemd_exec(args),
+            "restart": restart,
+            "restart_sec": f"{restart_sec:g}",
+        },
+    )
+    resolved = {
+        **node,
+        "repo": repo,
+        "agent_script": agent_script,
+        "logdir": logdir,
+        "telem_dir": telem_dir,
+        "process": process,
+    }
+    return resolved, service_name, unit
+
+
+def _render_server_service(
+    config: dict[str, Any],
+    mode: str,
+) -> tuple[dict[str, Any], str, str]:
+    """Resolve the local server and render its systemd unit."""
+
+    defaults = config.get("defaults", {})
+    raw_server = config.get("server", {})
+    server = _server_config(config)
+    process = _process_config(defaults, raw_server, "server")
+    systemd = process["systemd"]
+    if not _str_bool(systemd.get("user_service", True)):
+        raise ValueError("install-service currently supports only systemd user services")
+
+    mode_config = _mode_settings(config, mode)
+    repo = str(server.get("repo") or "")
+    script_value = str(server.get("script") or server.get("server_script") or "server_v1.py")
+    server_script = _resolve_under_repo(repo, script_value)
+    telem_dir = _resolve_under_repo(repo, str(server.get("telem_dir") or "telemetry"))
+    receiver_manifest = mode_config.get("receiver_manifest") or server.get("receiver_manifest")
+    receiver_manifest_path = (
+        _resolve_under_repo(repo, str(receiver_manifest)) if receiver_manifest else ""
+    )
+    max_file_mb, fsync_seconds = _telemetry_runtime_values(server)
+    required_values = {
+        "python": server.get("python"),
+        "repo": repo,
+        "script": server_script,
+        "bind_addr": server.get("bind_addr"),
+        "telem_dir": telem_dir,
+    }
+    _require_config_values("server", required_values, list(required_values))
+    restart, restart_sec = _systemd_restart_values(systemd)
+    args = [
+        server.get("python"),
+        "-u",
+        server_script,
+        "--ip",
+        server.get("bind_addr", "0.0.0.0:50051"),
+        "--timing-mode",
+        mode_config.get("timing_mode", mode),
+        "--telem-dir",
+        telem_dir,
+        "--telem-max-file-mb",
+        max_file_mb,
+        "--telem-fsync-seconds",
+        fsync_seconds,
+        "-v",
+        server.get("verbosity", 2),
+    ]
+    if receiver_manifest_path:
+        args.extend(["--config", receiver_manifest_path])
+
+    service_name = _systemd_service_name(systemd.get("service_name"))
+    unit = _render_systemd_template(
+        "gnss-server.service.template",
+        {
+            "repo": repo,
+            "exec_start": _systemd_exec(args),
+            "restart": restart,
+            "restart_sec": f"{restart_sec:g}",
+        },
+    )
+    resolved = {
+        **server,
+        "repo": repo,
+        "script": server_script,
+        "telem_dir": telem_dir,
+        "receiver_manifest": receiver_manifest_path,
+        "timing_mode": mode_config.get("timing_mode", mode),
+        "process": process,
+    }
+    return resolved, service_name, unit
+
+
+def _systemd_install_script(
+    unit: str,
+    service_name: str,
+    *,
+    enable: bool,
+    check_linger: bool,
+) -> str:
+    """Build a node script that atomically installs one systemd user unit."""
+
+    encoded = base64.b64encode(unit.encode("utf-8")).decode("ascii")
+    enable_lines = (
+        [
+            'systemctl --user enable "$UNIT_NAME"',
+            'ENABLED="yes"',
+        ]
+        if enable
+        else ['ENABLED="not requested"']
+    )
+    linger_lines = (
+        [
+            'LINGER="$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || true)"',
+            '[ -n "$LINGER" ] || LINGER="unknown"',
+        ]
+        if check_linger
+        else ['LINGER="not checked"']
+    )
+    return "\n".join(
+        [
+            "set -euo pipefail",
+            f"UNIT_NAME={shlex.quote(service_name)}",
+            'UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"',
+            'UNIT_PATH="$UNIT_DIR/$UNIT_NAME"',
+            'mkdir -p "$UNIT_DIR"',
+            'TEMP_UNIT="$(mktemp "$UNIT_DIR/.${UNIT_NAME}.XXXXXX")"',
+            'trap \'rm -f "$TEMP_UNIT"\' EXIT',
+            f"printf '%s' {shlex.quote(encoded)} | base64 --decode > \"$TEMP_UNIT\"",
+            'chmod 0644 "$TEMP_UNIT"',
+            'mv -f "$TEMP_UNIT" "$UNIT_PATH"',
+            "trap - EXIT",
+            "systemctl --user daemon-reload",
+            *enable_lines,
+            *linger_lines,
+            'printf "GNSS_UNIT_PATH=%s\\n" "$UNIT_PATH"',
+            'printf "GNSS_ENABLED=%s\\n" "$ENABLED"',
+            'printf "GNSS_LINGER=%s\\n" "$LINGER"',
+            'printf "GNSS_USER=%s\\n" "$(id -un)"',
+        ]
+    )
+
+
+def _install_result_detail(result: CommandResult, check_linger: bool) -> str:
+    """Summarize installer markers and add a useful linger warning."""
+
+    markers: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        if line.startswith("GNSS_") and "=" in line:
+            name, value = line.split("=", 1)
+            markers[name] = value
+
+    detail = markers.get("GNSS_UNIT_PATH", "systemd user unit installed")
+    enabled = markers.get("GNSS_ENABLED")
+    if enabled:
+        detail += f"; enabled={enabled}"
+    linger = markers.get("GNSS_LINGER")
+    if check_linger and linger != "yes":
+        user = markers.get("GNSS_USER", "USER")
+        detail += (
+            f"; linger={linger or 'unknown'}: boot startup may require "
+            f"'sudo loginctl enable-linger {shlex.quote(user)}'"
+        )
+    return detail
 
 
 def _server_status(config: dict[str, Any]) -> dict[str, Any]:
@@ -1412,6 +1744,189 @@ def start_gnss(
     }
 
 
+def _service_preflight_script(resolved: dict[str, Any], kind: str) -> str:
+    """Build lightweight path checks used before installing a service."""
+
+    script_key = "agent_script" if kind == "agent" else "script"
+    return "\n".join(
+        [
+            "set -euo pipefail",
+            f"test -x {shlex.quote(str(resolved['python']))}",
+            f"test -d {shlex.quote(str(resolved['repo']))}",
+            f"test -f {shlex.quote(str(resolved[script_key]))}",
+            f"mkdir -p {shlex.quote(str(resolved.get('logdir', '')))} "
+            f"{shlex.quote(str(resolved['telem_dir']))}",
+        ]
+    )
+
+
+def _install_one_service(
+    *,
+    kind: str,
+    key: str,
+    resolved: dict[str, Any],
+    service_name: str,
+    unit: str,
+    node: dict[str, Any] | None,
+    dry_run: bool,
+) -> InstallResult:
+    """Install one rendered service locally or through a node's SSH transport."""
+
+    systemd = resolved["process"]["systemd"]
+    enable = _str_bool(systemd.get("enable_on_install", True))
+    check_linger = _str_bool(systemd.get("check_linger", True))
+    is_local = node is None or _node_is_local(node)
+    host = socket.gethostname() if node is None else _node_host(node, key)
+    daq_name = str(resolved.get("daq_name", key))
+    required = kind == "server" or _str_bool(resolved.get("required", False))
+    install_script = _systemd_install_script(
+        unit,
+        service_name,
+        enable=enable,
+        check_linger=check_linger,
+    )
+    action_script = _service_preflight_script(resolved, kind) + "\n" + install_script
+    command = (
+        "bash -c " + shlex.quote(action_script)
+        if node is None
+        else _node_command(node, action_script)
+    )
+
+    if dry_run:
+        return InstallResult(
+            kind=kind,
+            key=key,
+            daq_name=daq_name,
+            host=host,
+            status="dry-run",
+            service_name=service_name,
+            detail=(
+                f"would install ~/.config/systemd/user/{service_name}; "
+                f"enable={'yes' if enable else 'no'}"
+            ),
+            required=required,
+            local=is_local,
+            command=command,
+            script=unit,
+        )
+
+    result = (
+        _run_bash(action_script, timeout=20.0)
+        if node is None
+        else _node_run(node, action_script, timeout=20.0)
+    )
+    ok = result.returncode == 0
+    return InstallResult(
+        kind=kind,
+        key=key,
+        daq_name=daq_name,
+        host=host,
+        status="installed" if ok else "failed",
+        service_name=service_name,
+        detail=(
+            _install_result_detail(result, check_linger)
+            if ok
+            else _format_cmd_result(result)
+        ),
+        required=required,
+        local=is_local,
+        command=command,
+        script=unit,
+    )
+
+
+def install_services(
+    config_path: str | os.PathLike[str] = DEFAULT_CONFIG,
+    *,
+    nodes: list[str] | None = None,
+    install_server: bool = False,
+    all_nodes: bool = False,
+    include_disabled: bool = False,
+    mode: str = "differential",
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Render and install selected GNSS systemd user services."""
+
+    if not install_server and not nodes and not all_nodes:
+        raise ValueError("select --server, one or more --node values, or --all-nodes")
+    if nodes and all_nodes:
+        raise ValueError("--node and --all-nodes cannot be used together")
+
+    config = load_config(config_path)
+    defaults = config.get("defaults", {})
+    results: list[InstallResult] = []
+
+    if install_server:
+        resolved, service_name, unit = _render_server_service(config, mode)
+        results.append(
+            _install_one_service(
+                kind="server",
+                key="server",
+                resolved=resolved,
+                service_name=service_name,
+                unit=unit,
+                node=None,
+                dry_run=dry_run,
+            )
+        )
+
+    selectors = [] if all_nodes else list(nodes or [])
+    selected_items = (
+        _selected_node_items(
+            config,
+            selectors,
+            include_disabled=include_disabled,
+        )
+        if all_nodes or selectors
+        else []
+    )
+    if selectors:
+        matched = {
+            selector
+            for selector in selectors
+            for key, raw_node in config.get("nodes", {}).items()
+            if selector in {key, raw_node.get("host"), raw_node.get("daq_name")}
+        }
+        unmatched = [selector for selector in selectors if selector not in matched]
+        if unmatched:
+            raise ValueError(f"unknown node selector(s): {', '.join(unmatched)}")
+
+        hidden = []
+        selected_keys = {key for key, _ in selected_items}
+        for key, raw_node in config.get("nodes", {}).items():
+            if key in selected_keys:
+                continue
+            if any(selector in {key, raw_node.get("host"), raw_node.get("daq_name")} for selector in selectors):
+                hidden.append(key)
+        if hidden:
+            raise ValueError(
+                f"selected node(s) marked present=false: {', '.join(hidden)}; "
+                "pass --include-disabled to install them"
+            )
+
+    for key, raw_node in selected_items:
+        resolved, service_name, unit = _render_agent_service(key, raw_node, defaults)
+        node = _merge(defaults, raw_node)
+        results.append(
+            _install_one_service(
+                kind="agent",
+                key=key,
+                resolved=resolved,
+                service_name=service_name,
+                unit=unit,
+                node=node,
+                dry_run=dry_run,
+            )
+        )
+
+    return {
+        "config_path": str(config_path),
+        "dry_run": dry_run,
+        "mode": mode,
+        "results": results,
+    }
+
+
 def _stop_script(screen_name: str, process_match: str, grace_sec: int, log_path: str | None) -> str:
     """Build a Bash script that gracefully stops a screen-managed process.
 
@@ -1924,6 +2439,29 @@ def _print_stop(report: dict[str, Any]) -> None:
         print()
 
 
+def _print_install(report: dict[str, Any]) -> None:
+    """Print a systemd service installation report."""
+
+    mode = "dry-run" if report.get("dry_run") else "install-service"
+    print(f"Config: {report['config_path']}")
+    print(f"Mode:   {mode}")
+    print(f"Timing: {report['mode']}")
+    print()
+    for item in report["results"]:
+        print(
+            f"{item.status:9} {item.kind:6} {item.key:12} "
+            f"{item.daq_name:18} host={item.host}"
+        )
+        print(f"  service: {item.service_name}")
+        if item.detail:
+            print(f"  detail: {item.detail}")
+        if report.get("dry_run") and item.script:
+            print("  rendered unit:")
+            for line in item.script.splitlines():
+                print(f"    {line}")
+        print()
+
+
 def _jsonable(report: dict[str, Any]) -> dict[str, Any]:
     """Convert dataclass values to plain dicts for JSON output.
 
@@ -1935,7 +2473,7 @@ def _jsonable(report: dict[str, Any]) -> dict[str, Any]:
     out = {k: v for k, v in report.items() if k != "results"}
     out["results"] = []
     for item in report["results"]:
-        if isinstance(item, (StartResult, StopResult)):
+        if isinstance(item, (StartResult, StopResult, InstallResult)):
             copied = item.__dict__
         else:
             copied = dict(item)
@@ -1991,6 +2529,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     stop.add_argument("--compress-logs", action="store_true", help="gzip -9 completed log and telemetry files after stopping")
     stop.add_argument("--dry-run", action="store_true", help="show stop commands without running them")
     stop.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+
+    install = sub.add_parser(
+        "install-service",
+        help="install or update systemd user services without starting them",
+    )
+    add_config_argument(install)
+    install.add_argument(
+        "--node",
+        action="append",
+        default=[],
+        help="install an agent service by node key, host, or DAQ name; repeatable",
+    )
+    install.add_argument("--all-nodes", action="store_true", help="install agent services on all present nodes")
+    install.add_argument("--server", action="store_true", help="install the local GNSS server service")
+    install.add_argument(
+        "--mode",
+        choices=["differential", "absolute"],
+        default="differential",
+        help="timing mode embedded in the server service",
+    )
+    install.add_argument("--include-disabled", action="store_true", help="include nodes marked present=false")
+    install.add_argument("--dry-run", action="store_true", help="render units without installing them")
+    install.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     return parser.parse_args(argv)
 
 
@@ -2072,7 +2633,24 @@ def main(argv: list[str] | None = None) -> int:
                 if item.kind == "server" or item.required:
                     failed_required = failed_required or item.status == "failed"
             return 1 if failed_required else 0
-    except ConfigLoadError as exc:
+
+        if args.command == "install-service":
+            report = install_services(
+                args.config,
+                nodes=args.node,
+                install_server=args.server,
+                all_nodes=args.all_nodes,
+                include_disabled=args.include_disabled,
+                mode=args.mode,
+                dry_run=args.dry_run,
+            )
+            if args.json:
+                print(json.dumps(_jsonable(report), indent=2, sort_keys=True))
+            else:
+                _print_install(report)
+
+            return 1 if any(item.status == "failed" for item in report["results"]) else 0
+    except (ConfigLoadError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 

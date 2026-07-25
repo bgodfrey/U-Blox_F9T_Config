@@ -1,7 +1,7 @@
 # GNSS Orchestrator Guide
 
 This document describes how to use `gnss_scripts/gnss_orchestrator.py` to check,
-start, and stop the GNSS server and GNSS agents across DAQ nodes.
+start, stop, and install persistent GNSS services across DAQ nodes.
 
 The orchestrator is meant to answer three practical questions:
 
@@ -36,6 +36,7 @@ python gnss_orchestrator.py --help
 python gnss_orchestrator.py status --help
 python gnss_orchestrator.py start --help
 python gnss_orchestrator.py stop --help
+python gnss_orchestrator.py install-service --help
 ```
 
 Use a non-default deployment config:
@@ -94,6 +95,24 @@ Start one node only:
 
 ```bash
 python gnss_orchestrator.py start --node WINTERS
+```
+
+Preview a persistent agent service for one node:
+
+```bash
+python gnss_orchestrator.py install-service --node PTI --dry-run
+```
+
+Install and enable that agent service without starting it:
+
+```bash
+python gnss_orchestrator.py install-service --node PTI
+```
+
+Install the local server service in differential mode:
+
+```bash
+python gnss_orchestrator.py install-service --server --mode differential
 ```
 
 Configure the Leo Bodnar and then start one node:
@@ -255,6 +274,18 @@ The `defaults` section includes common values such as:
   "agent_screen": "gnss_agent",
   "server_screen": "gnss_server",
   "shutdown_grace_sec": 5,
+  "process": {
+    "runner": "screen",
+    "systemd": {
+      "user_service": true,
+      "enable_on_install": true,
+      "check_linger": true,
+      "restart": "always",
+      "restart_sec": 10,
+      "agent_service_name": "gnss-agent.service",
+      "server_service_name": "gnss-server.service"
+    }
+  },
   "agent_script": "agent_v1.py",
   "server_script": "server_v1.py",
   "logdir": "logging",
@@ -711,6 +742,65 @@ Fields:
 
 The `values` list is useful for audits and snapshots. It only includes
 manifest-managed registers, not every possible u-blox register.
+
+## Install Service Command
+
+`install-service` renders the repository's systemd templates using
+`gnss_deployment.json5`, then installs them as user services under
+`~/.config/systemd/user/`. The server unit is installed locally. Agent units use
+the same local-or-SSH transport as the other orchestrator commands.
+
+Installation is intentionally separate from process control. It performs
+lightweight path checks, writes the unit atomically, runs
+`systemctl --user daemon-reload`, and enables the unit when
+`enable_on_install` is true. It does not start or restart the service.
+
+Preview one remote agent unit:
+
+```bash
+python gnss_orchestrator.py install-service --node PTI --dry-run
+```
+
+Install one or more agent units:
+
+```bash
+python gnss_orchestrator.py install-service --node PTI
+python gnss_orchestrator.py install-service --node PTI --node FERN
+python gnss_orchestrator.py install-service --all-nodes
+```
+
+Install the local server unit. The selected mode and receiver manifest are
+embedded in the generated server `ExecStart` command:
+
+```bash
+python gnss_orchestrator.py install-service --server --mode differential
+python gnss_orchestrator.py install-service --server --mode absolute
+```
+
+The command may install both the server and agents in one invocation:
+
+```bash
+python gnss_orchestrator.py install-service --server --all-nodes --mode differential
+```
+
+For reliable user-service startup after a reboot, lingering must be enabled once
+for the service account on each machine:
+
+```bash
+sudo loginctl enable-linger panoseti
+```
+
+The installer checks this setting and prints a warning when it is not enabled.
+It does not invoke `sudo`. Confirm an installed unit before starting it:
+
+```bash
+systemctl --user cat gnss-agent.service
+systemctl --user status gnss-agent.service
+```
+
+At this stage, `start` and `stop` still manage the existing screen-based
+deployment, and `status` retains its current prerequisite checks. Installing a
+unit alone does not switch the runner or launch a second agent.
 
 ## Start Command
 
