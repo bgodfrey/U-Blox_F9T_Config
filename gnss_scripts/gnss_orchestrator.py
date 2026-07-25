@@ -658,16 +658,6 @@ def _screen_verify_script(screen_name: str, log_path: str) -> list[str]:
     ]
 
 
-def _pgrep_safe_pattern(process_match: str) -> str:
-    """Return a pgrep regex that does not match its own shell wrapper."""
-
-    if not process_match:
-        return process_match
-    if process_match.startswith("/"):
-        return "[/]" + re.escape(process_match[1:])
-    return "[" + re.escape(process_match[0]) + "]" + re.escape(process_match[1:])
-
-
 def _all_checks_ok(item: dict[str, Any]) -> bool:
     """Return true when every Check in a status item passed."""
 
@@ -2317,7 +2307,7 @@ def _stop_script(screen_name: str, process_match: str, grace_sec: int, log_path:
     """
 
     screen = shlex.quote(screen_name)
-    match = shlex.quote(_pgrep_safe_pattern(process_match))
+    match = shlex.quote(process_match)
     log = shlex.quote(log_path) if log_path else ""
     lines = [
         "set -euo pipefail",
@@ -2327,15 +2317,28 @@ def _stop_script(screen_name: str, process_match: str, grace_sec: int, log_path:
         "screen_sessions() {",
         "  screen -ls 2>/dev/null | awk -v n=\"$SCREEN_NAME\" '$1 ~ (\"\\\\.\" n \"$\") {print $1}'",
         "}",
+        "matching_pids() {",
+        "  local proc_dir pid",
+        "  for proc_dir in /proc/[0-9]*; do",
+        "    [ -r \"$proc_dir/cmdline\" ] || continue",
+        "    pid=${proc_dir##*/}",
+        "    if tr '\\0' '\\n' < \"$proc_dir/cmdline\" 2>/dev/null | grep -Fxq -- \"$PROCESS_MATCH\"; then",
+        "      printf '%s\\n' \"$pid\"",
+        "    fi",
+        "  done",
+        "}",
         "had_session=0",
         "while read -r sid; do",
         "  [ -n \"$sid\" ] || continue",
         "  had_session=1",
         "  screen -S \"$sid\" -X stuff $'\\003' >/dev/null 2>&1 || true",
         "done < <(screen_sessions)",
-        "pkill -TERM -f -- \"$PROCESS_MATCH\" >/dev/null 2>&1 || true",
+        "while read -r pid; do",
+        "  [ -n \"$pid\" ] || continue",
+        "  kill -TERM \"$pid\" >/dev/null 2>&1 || true",
+        "done < <(matching_pids)",
         "for _ in $(seq 1 \"$GRACE_SEC\"); do",
-        "  if ! pgrep -f -- \"$PROCESS_MATCH\" >/dev/null 2>&1; then",
+        "  if ! matching_pids | grep -q .; then",
         "    break",
         "  fi",
         "  sleep 1",
@@ -2359,7 +2362,7 @@ def _stop_script(screen_name: str, process_match: str, grace_sec: int, log_path:
         [
             "  exit 1",
             "fi",
-            "if pgrep -f -- \"$PROCESS_MATCH\" >/dev/null 2>&1; then",
+            "if matching_pids | grep -q .; then",
             "  echo '[FAIL] process still running after stop'",
         ]
     )
