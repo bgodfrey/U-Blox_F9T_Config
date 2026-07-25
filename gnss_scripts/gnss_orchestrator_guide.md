@@ -312,6 +312,19 @@ The `defaults` section includes common values such as:
 
 Node-specific entries can override these values.
 
+Process settings:
+
+- `process.runner`: `screen` or `systemd`. Defaults may be overridden by the
+  server or any individual node.
+- `enable_on_install`: enable generated units for boot startup. This does not
+  immediately start a unit when using `install-service`.
+- `check_linger`: require/report whether the user manager can run without a
+  login session.
+- `restart` and `restart_sec`: systemd restart policy after an unexpected
+  process exit.
+- `agent_service_name`, `server_service_name`, and per-target `service_name`:
+  filenames used under `~/.config/systemd/user/`.
+
 Telemetry rotation settings are passed through to `agent_v1.py` and
 `server_v1.py` when the orchestrator starts them:
 
@@ -558,6 +571,8 @@ What it checks:
 - A u-blox GNSS receiver can be detected.
 - If Bodnar is present, the Bodnar repo/script/Python paths exist and the
   device can be queried with `lbe-1420-conf.py --status`.
+- For targets using the `systemd` runner, the user service is installed,
+  enabled, active, and has lingering enabled.
 - Optionally, receiver registers match the selected manifest.
 
 ### Status Examples
@@ -572,6 +587,12 @@ Check one node:
 
 ```bash
 python gnss_orchestrator.py status --node WINTERS
+```
+
+Inspect systemd state without changing the deployment config:
+
+```bash
+python gnss_orchestrator.py status --node PTI --runner systemd
 ```
 
 Include disabled nodes:
@@ -798,13 +819,15 @@ systemctl --user cat gnss-agent.service
 systemctl --user status gnss-agent.service
 ```
 
-At this stage, `start` and `stop` still manage the existing screen-based
-deployment, and `status` retains its current prerequisite checks. Installing a
-unit alone does not switch the runner or launch a second agent.
+Installing a unit alone does not start it. Set `process.runner` to `systemd` for
+the relevant target, or use `--runner systemd`, when the orchestrator should
+control it.
 
 ## Start Command
 
-The start command launches the GNSS server and GNSS agents in `screen` sessions.
+The start command launches the GNSS server and agents with the runner selected
+in `gnss_deployment.json5`. The default remains `screen`; `systemd` provides
+automatic restart and reboot recovery.
 
 Basic usage:
 
@@ -814,7 +837,7 @@ python gnss_orchestrator.py start
 
 By default this starts in differential mode.
 
-### Start Behavior
+### Screen Start Behavior
 
 For the server, the orchestrator:
 
@@ -855,8 +878,24 @@ The frequency and GNSS commands are separate because `lbe-1420-conf.py` treats
 `start --bodnar` does not run `lbe-1420-conf.py --status`; use the orchestrator
 `status` command for Bodnar health summaries.
 
-This means running `start` again is a restart for the selected processes. It
-will stop the existing matching `screen` session and launch a new one.
+### Systemd Start Behavior
+
+For a target using `systemd`, every `start` intentionally performs a fresh
+restart:
+
+1. Renders the service again from the current deployment config.
+2. Atomically updates the user unit and runs `daemon-reload`.
+3. Enables the unit when `enable_on_install` is true.
+4. Stops the service so `Restart=always` cannot race with legacy cleanup.
+5. Stops any matching screen session or stray Python process.
+6. Starts the service and verifies that it reaches `active`.
+
+Restarting is deliberate: the agent reconnects to the server, reapplies the
+RAM-only F9T register configuration, and opens new timestamped log and telemetry
+files. The server unit is similarly refreshed with the selected timing mode and
+manifest.
+
+Running `start` again is therefore a restart with either runner.
 
 ### Start Examples
 
@@ -870,6 +909,20 @@ Start all present nodes in differential mode:
 
 ```bash
 python gnss_orchestrator.py start --mode differential
+```
+
+Test systemd without changing `process.runner` in the config:
+
+```bash
+python gnss_orchestrator.py start --node PTI --runner systemd --dry-run
+python gnss_orchestrator.py start --node PTI --runner systemd
+```
+
+For routine operation, set the desired server/node `process.runner` values to
+`systemd` and omit the override:
+
+```bash
+python gnss_orchestrator.py start --node PTI
 ```
 
 Start all present nodes in absolute mode:
@@ -959,7 +1012,10 @@ configured bodnar winters      WINTERS            host=panoseti-winter
 
 ## Stop Command
 
-The stop command stops GNSS `screen` sessions.
+The stop command uses the configured runner. In systemd mode it stops the user
+service and also cleans up matching legacy screen/process instances. It leaves
+the service enabled, so it remains eligible for the next boot; `stop` only
+changes the current runtime state.
 
 Basic usage:
 
@@ -985,6 +1041,12 @@ Stop one node:
 
 ```bash
 python gnss_orchestrator.py stop --node WINTERS
+```
+
+Stop PTI through systemd without changing its configured runner:
+
+```bash
+python gnss_orchestrator.py stop --node PTI --runner systemd
 ```
 
 Stop all agents and the server:

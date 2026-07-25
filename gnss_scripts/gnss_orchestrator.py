@@ -6,9 +6,8 @@ The status command is intentionally read-only:
     python gnss_scripts/gnss_orchestrator.py status
 
 It validates the deployment inventory and checks local/remote prerequisites.
-The start command uses the same inventory and preflight checks before launching
-the GNSS server and agents in screen sessions. The stop command gracefully shuts
-those sessions down again. The install-service command renders and installs
+The start and stop commands use the same inventory and support screen or
+systemd process runners. The install-service command renders and installs
 systemd user units without starting them.
 """
 
@@ -1039,7 +1038,99 @@ def _install_result_detail(result: CommandResult, check_linger: bool) -> str:
     return detail
 
 
-def _server_status(config: dict[str, Any]) -> dict[str, Any]:
+def _runner_config(
+    defaults: dict[str, Any],
+    item: dict[str, Any],
+    kind: str,
+    override: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Resolve and validate the process runner for one target."""
+
+    process = _process_config(defaults, item, kind)
+    runner = str(override or process.get("runner") or "screen").lower()
+    if runner not in {"screen", "systemd"}:
+        raise ValueError(f"invalid process runner {runner!r}; expected screen or systemd")
+    return runner, process
+
+
+def _systemd_status_script(service_name: str, check_linger: bool) -> str:
+    """Build a read-only script that reports one systemd user service."""
+
+    lines = [
+        "set -u",
+        f"UNIT_NAME={shlex.quote(service_name)}",
+        'LOAD="$(systemctl --user show "$UNIT_NAME" -p LoadState --value 2>/dev/null || true)"',
+        'ACTIVE="$(systemctl --user is-active "$UNIT_NAME" 2>/dev/null || true)"',
+        'ENABLED="$(systemctl --user is-enabled "$UNIT_NAME" 2>/dev/null || true)"',
+        '[ -n "$LOAD" ] || LOAD="not-found"',
+        '[ -n "$ACTIVE" ] || ACTIVE="unknown"',
+        '[ -n "$ENABLED" ] || ENABLED="unknown"',
+    ]
+    if check_linger:
+        lines.extend(
+            [
+                'LINGER="$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || true)"',
+                '[ -n "$LINGER" ] || LINGER="unknown"',
+            ]
+        )
+    else:
+        lines.append('LINGER="not checked"')
+    lines.extend(
+        [
+            'printf "GNSS_LOAD=%s\\n" "$LOAD"',
+            'printf "GNSS_ACTIVE=%s\\n" "$ACTIVE"',
+            'printf "GNSS_ENABLED=%s\\n" "$ENABLED"',
+            'printf "GNSS_LINGER=%s\\n" "$LINGER"',
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _parse_systemd_checks(result: CommandResult, service_name: str, check_linger: bool) -> list[Check]:
+    """Convert systemd status markers into normal orchestrator checks."""
+
+    if result.returncode != 0:
+        return [Check("systemd process status", False, _format_cmd_result(result))]
+
+    markers: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        if line.startswith("GNSS_") and "=" in line:
+            name, value = line.split("=", 1)
+            markers[name] = value
+
+    load = markers.get("GNSS_LOAD", "unknown")
+    active = markers.get("GNSS_ACTIVE", "unknown")
+    enabled = markers.get("GNSS_ENABLED", "unknown")
+    checks = [
+        Check("systemd service installed", load == "loaded", f"{service_name} load={load}"),
+        Check("systemd service enabled", enabled == "enabled", f"{service_name} enabled={enabled}"),
+        Check("systemd service active", active == "active", f"{service_name} active={active}"),
+    ]
+    if check_linger:
+        linger = markers.get("GNSS_LINGER", "unknown")
+        checks.append(Check("systemd user linger", linger == "yes", f"linger={linger}"))
+    return checks
+
+
+def _parse_systemd_conflict_check(result: CommandResult, service_name: str) -> Check | None:
+    """Return a warning only when systemd is active under the screen runner."""
+
+    active = "unknown"
+    for line in result.stdout.splitlines():
+        if line.startswith("GNSS_ACTIVE="):
+            active = line.split("=", 1)[1]
+            break
+    if active != "active":
+        return None
+    return Check("runner conflict", False, f"runner=screen but {service_name} is active")
+
+
+def _server_status(
+    config: dict[str, Any],
+    *,
+    check_process: bool = False,
+    runner_override: str | None = None,
+) -> dict[str, Any]:
     """Validate local server configuration and filesystem prerequisites.
 
     The GNSS server is expected to run on the orchestration/head node, so these
@@ -1048,7 +1139,10 @@ def _server_status(config: dict[str, Any]) -> dict[str, Any]:
     server/node results uniformly.
     """
 
+    defaults = config.get("defaults", {})
+    raw_server = config.get("server", {})
     server = _server_config(config)
+    runner, process = _runner_config(defaults, raw_server, "server", runner_override)
 
     # Server script/logdir paths may be absolute, but the usual case is that
     # they are stored relative to the server repo.
@@ -1083,6 +1177,28 @@ def _server_status(config: dict[str, Any]) -> dict[str, Any]:
     checks.append(Check("server telem_dir parent", Path(telem_dir_path).parent.is_dir(), telem_dir_path))
     if receiver_manifest_path:
         checks.append(Check("server receiver manifest", Path(receiver_manifest_path).is_file(), receiver_manifest_path))
+    if check_process:
+        systemd = process["systemd"]
+        service_name = _systemd_service_name(systemd.get("service_name"))
+        status_result = _run_bash(
+            _systemd_status_script(
+                service_name,
+                _str_bool(systemd.get("check_linger", True)),
+            ),
+            timeout=10.0,
+        )
+        if runner == "systemd":
+            checks.extend(
+                _parse_systemd_checks(
+                    status_result,
+                    service_name,
+                    _str_bool(systemd.get("check_linger", True)),
+                )
+            )
+        else:
+            conflict = _parse_systemd_conflict_check(status_result, service_name)
+            if conflict is not None:
+                checks.append(conflict)
 
     return {
         "kind": "server",
@@ -1090,6 +1206,7 @@ def _server_status(config: dict[str, Any]) -> dict[str, Any]:
         "daq_name": server.get("daq_name", "server"),
         "host": socket.gethostname(),
         "local": True,
+        "runner": runner,
         "checks": checks,
         "resolved": {
             "python": server.get("python"),
@@ -1098,6 +1215,7 @@ def _server_status(config: dict[str, Any]) -> dict[str, Any]:
             "logdir": logdir_path,
             "telem_dir": telem_dir_path,
             "receiver_manifest": receiver_manifest_path,
+            "service_name": process["systemd"].get("service_name"),
         },
     }
 
@@ -1111,6 +1229,8 @@ def _node_status(
     verify_registers: bool = False,
     mode_settings: dict[str, Any] | None = None,
     check_bodnar: bool = True,
+    check_process: bool = False,
+    runner_override: str | None = None,
 ) -> dict[str, Any]:
     """Validate one DAQ/GNSS node entry.
 
@@ -1128,6 +1248,7 @@ def _node_status(
     node = _merge(defaults, raw_node)
     present = _present(node, True)
     is_local = _node_is_local(node)
+    runner, process = _runner_config(defaults, raw_node, "agent", runner_override)
 
     # Resolve the paths that future start/stop commands will use. The status
     # command reports these resolved values so config mistakes are easy to spot.
@@ -1227,6 +1348,30 @@ def _node_status(
                 verify_check, register_verify_report = _parse_register_verify(verify_result)
                 checks.append(verify_check)
 
+            if check_process:
+                systemd = process["systemd"]
+                service_name = _systemd_service_name(systemd.get("service_name"))
+                status_result = _node_run(
+                    node,
+                    _systemd_status_script(
+                        service_name,
+                        _str_bool(systemd.get("check_linger", True)),
+                    ),
+                    timeout=10.0,
+                )
+                if runner == "systemd":
+                    checks.extend(
+                        _parse_systemd_checks(
+                            status_result,
+                            service_name,
+                            _str_bool(systemd.get("check_linger", True)),
+                        )
+                    )
+                else:
+                    conflict = _parse_systemd_conflict_check(status_result, service_name)
+                    if conflict is not None:
+                        checks.append(conflict)
+
     result = {
         "kind": "node",
         "key": key,
@@ -1235,6 +1380,7 @@ def _node_status(
         "local": is_local,
         "present": present,
         "required": _str_bool(node.get("required", False)),
+        "runner": runner,
         "gnss_detected": gnss_detected,
         "gnss_port": gnss_port,
         "bodnar_detected": bodnar_detected,
@@ -1250,6 +1396,7 @@ def _node_status(
             "ctrl_addr": node.get("ctrl_addr"),
             "verbosity": node.get("verbosity"),
             "local": is_local,
+            "service_name": process["systemd"].get("service_name"),
             "bodnar": {
                 "present": bodnar_present,
                 "required": _str_bool(bodnar.get("required", False)),
@@ -1275,6 +1422,7 @@ def status_gnss(
     local_only: bool = False,
     verify_registers: bool = False,
     mode: str = "differential",
+    runner: str | None = None,
 ) -> dict[str, Any]:
     """Build a read-only GNSS deployment status report.
 
@@ -1286,6 +1434,7 @@ def status_gnss(
         nodes: Optional list of node keys, hostnames, or DAQ names to include.
         include_disabled: Include disabled nodes in the report.
         local_only: Skip SSH checks and validate only local/config structure.
+        runner: Optional screen/systemd override for process-state checks.
 
     Returns:
         A report dictionary with the config path and per-server/per-node
@@ -1299,7 +1448,7 @@ def status_gnss(
     mode_settings = _mode_settings(config, mode)
 
     # Always include the server status. Node filtering applies only to DAQ nodes.
-    results = [_server_status(config)]
+    results = [_server_status(config, check_process=True, runner_override=runner)]
     for key, node in raw_nodes.items():
         # Let users filter by inventory key, SSH host, or DAQ/display name.
         if selected and key not in selected and node.get("host") not in selected and node.get("daq_name") not in selected:
@@ -1315,10 +1464,18 @@ def status_gnss(
                 local_only=local_only,
                 verify_registers=verify_registers,
                 mode_settings=mode_settings,
+                check_process=True,
+                runner_override=runner,
             )
         )
 
-    return {"config_path": str(config_path), "mode": mode, "verify_registers": verify_registers, "results": results}
+    return {
+        "config_path": str(config_path),
+        "mode": mode,
+        "runner": runner,
+        "verify_registers": verify_registers,
+        "results": results,
+    }
 
 
 def _selected_node_items(
@@ -1393,7 +1550,80 @@ def _server_launch_script(server_status: dict[str, Any], run_stamp: str) -> tupl
     return script, log_path
 
 
-def _start_server(config: dict[str, Any], *, dry_run: bool, mode: str = "differential", run_stamp: str) -> StartResult:
+def _systemd_start_script(
+    resolved: dict[str, Any],
+    kind: str,
+    unit: str,
+    service_name: str,
+    legacy_stop_script: str,
+) -> tuple[str, str]:
+    """Build actual and human-readable scripts for a systemd restart."""
+
+    systemd = resolved["process"]["systemd"]
+    install_script = _systemd_install_script(
+        unit,
+        service_name,
+        enable=_str_bool(systemd.get("enable_on_install", True)),
+        check_linger=_str_bool(systemd.get("check_linger", True)),
+    )
+    service = shlex.quote(service_name)
+    control_lines = [
+        f"systemctl --user stop {service} >/dev/null 2>&1 || true",
+        legacy_stop_script,
+        f"systemctl --user start {service}",
+        "sleep 1",
+        f"if ! systemctl --user is-active --quiet {service}; then",
+        f"  echo '[FAIL] systemd service {service_name} is not active'",
+        f"  journalctl --user -u {service} -n 60 --no-pager 2>/dev/null || true",
+        "  exit 1",
+        "fi",
+        f"echo '[OK] systemd service {service_name} is active'",
+    ]
+    actual = "\n".join(
+        [
+            _service_preflight_script(resolved, kind),
+            install_script,
+            *control_lines,
+        ]
+    )
+    display = "\n".join(
+        [
+            f"# install/update ~/.config/systemd/user/{service_name} from the rendered template",
+            "systemctl --user daemon-reload",
+            (
+                f"systemctl --user enable {service}"
+                if _str_bool(systemd.get("enable_on_install", True))
+                else "# service enablement not requested"
+            ),
+            f"systemctl --user stop {service}  # suppress Restart=always during cleanup",
+            "# stop any legacy screen session or matching Python process",
+            f"systemctl --user start {service}",
+            f"systemctl --user is-active --quiet {service}",
+        ]
+    )
+    return actual, display
+
+
+def _stop_systemd_before_screen(script: str, service_name: str) -> str:
+    """Prevent a screen launch/stop from leaving a duplicate systemd process."""
+
+    return "\n".join(
+        [
+            "set -euo pipefail",
+            f"systemctl --user stop {shlex.quote(service_name)} >/dev/null 2>&1 || true",
+            script,
+        ]
+    )
+
+
+def _start_server(
+    config: dict[str, Any],
+    *,
+    dry_run: bool,
+    mode: str = "differential",
+    run_stamp: str,
+    runner_override: str | None = None,
+) -> StartResult:
     """Start the local GNSS server, or describe the command in dry-run mode."""
 
     mode_config = _mode_settings(config, mode)
@@ -1408,7 +1638,80 @@ def _start_server(config: dict[str, Any], *, dry_run: bool, mode: str = "differe
     server_status = _server_status(config)
     server = _server_config(config)
     server_status["config"] = server
+    runner, process = _runner_config(
+        config.get("defaults", {}),
+        config.get("server", {}),
+        "server",
+        runner_override,
+    )
+
+    if runner == "systemd":
+        resolved, service_name, unit = _render_server_service(config, mode)
+        legacy_stop_script, _ = _server_stop_script(server_status)
+        script, display_script = _systemd_start_script(
+            resolved,
+            "server",
+            unit,
+            service_name,
+            legacy_stop_script,
+        )
+        command = "bash -c " + shlex.quote(script)
+
+        if not _all_checks_ok(server_status):
+            return StartResult(
+                kind="server",
+                key="server",
+                daq_name=str(server_status["daq_name"]),
+                host=str(server_status["host"]),
+                status="failed",
+                detail="server preflight failed",
+                required=True,
+                local=True,
+                command=command,
+                script=display_script,
+            )
+        if dry_run:
+            return StartResult(
+                kind="server",
+                key="server",
+                daq_name=str(server_status["daq_name"]),
+                host=str(server_status["host"]),
+                status="dry-run",
+                detail=f"would refresh and restart systemd service {service_name} in {mode} mode",
+                required=True,
+                local=True,
+                command=command,
+                script=display_script,
+            )
+
+        result = _run_bash(
+            script,
+            timeout=float(server.get("shutdown_grace_sec", 5)) + 25.0,
+        )
+        ok = result.returncode == 0
+        return StartResult(
+            kind="server",
+            key="server",
+            daq_name=str(server_status["daq_name"]),
+            host=str(server_status["host"]),
+            status="started" if ok else "failed",
+            detail=(
+                f"systemd service {service_name} active; "
+                f"{_install_result_detail(result, _str_bool(resolved['process']['systemd'].get('check_linger', True)))}"
+                if ok
+                else _format_cmd_result(result)
+            ),
+            required=True,
+            local=True,
+            command=command,
+            script=display_script,
+        )
+
     script, log_path = _server_launch_script(server_status, run_stamp)
+    script = _stop_systemd_before_screen(
+        script,
+        _systemd_service_name(process["systemd"].get("service_name")),
+    )
     command = "bash -c " + shlex.quote(script)
 
     if not _all_checks_ok(server_status):
@@ -1506,6 +1809,7 @@ def _start_node(
     *,
     dry_run: bool,
     run_stamp: str,
+    runner_override: str | None = None,
 ) -> StartResult:
     """Start one local or remote GNSS agent, or describe a dry run."""
 
@@ -1513,8 +1817,6 @@ def _start_node(
     node = _merge(defaults, raw_node)
     is_local = _node_is_local(node)
     node_status["config"] = node
-    script, log_path = _agent_launch_script(node_status, run_stamp)
-    command = _node_command(node, script)
     required = _str_bool(node.get("required", False))
     start_only_if_receiver_detected = _str_bool(node.get("start_only_if_receiver_detected", True))
 
@@ -1528,8 +1830,8 @@ def _start_node(
             detail="GNSS receiver not detected",
             required=required,
             local=is_local,
-            command=command,
-            script=script,
+            command="",
+            script="",
         )
 
     if not _all_checks_ok(node_status):
@@ -1542,10 +1844,67 @@ def _start_node(
             detail="node preflight failed",
             required=required,
             local=is_local,
-            command=command,
-            script=script,
+            command="",
+            script="",
         )
 
+    runner, process = _runner_config(defaults, raw_node, "agent", runner_override)
+    if runner == "systemd":
+        resolved, service_name, unit = _render_agent_service(key, raw_node, defaults)
+        stop_status = _node_stop_status(key, raw_node, defaults)
+        legacy_stop_script, _ = _agent_stop_script(stop_status)
+        script, display_script = _systemd_start_script(
+            resolved,
+            "agent",
+            unit,
+            service_name,
+            legacy_stop_script,
+        )
+        command = _node_command(node, script)
+        if dry_run:
+            return StartResult(
+                kind="node",
+                key=key,
+                daq_name=str(node_status["daq_name"]),
+                host=str(node_status["host"]),
+                status="dry-run",
+                detail=f"would refresh and restart systemd service {service_name}",
+                required=required,
+                local=is_local,
+                command=command,
+                script=display_script,
+            )
+
+        result = _node_run(
+            node,
+            script,
+            timeout=float(node.get("shutdown_grace_sec", 5)) + 25.0,
+        )
+        ok = result.returncode == 0
+        return StartResult(
+            kind="node",
+            key=key,
+            daq_name=str(node_status["daq_name"]),
+            host=str(node_status["host"]),
+            status="started" if ok else "failed",
+            detail=(
+                f"systemd service {service_name} active; "
+                f"{_install_result_detail(result, _str_bool(resolved['process']['systemd'].get('check_linger', True)))}"
+                if ok
+                else _format_cmd_result(result)
+            ),
+            required=required,
+            local=is_local,
+            command=command,
+            script=display_script,
+        )
+
+    script, log_path = _agent_launch_script(node_status, run_stamp)
+    script = _stop_systemd_before_screen(
+        script,
+        _systemd_service_name(process["systemd"].get("service_name")),
+    )
+    command = _node_command(node, script)
     if dry_run:
         return StartResult(
             kind="node",
@@ -1684,6 +2043,7 @@ def start_gnss(
     include_disabled: bool = False,
     mode: str = "differential",
     configure_bodnar: bool = False,
+    runner: str | None = None,
 ) -> dict[str, Any]:
     """Start the local GNSS server and configured local/remote agents.
 
@@ -1692,6 +2052,7 @@ def start_gnss(
         nodes: Optional list of node keys, hostnames, or DAQ names to start.
         dry_run: If true, report launch commands without executing them.
         include_disabled: Include disabled nodes when selecting targets.
+        runner: Optional screen/systemd override for all selected processes.
 
     Returns:
         A structured start report with one StartResult for the server and one
@@ -1701,13 +2062,22 @@ def start_gnss(
     config = load_config(config_path)
     defaults = config.get("defaults", {})
     run_stamp = _utc_run_stamp()
-    results = [_start_server(config, dry_run=dry_run, mode=mode, run_stamp=run_stamp)]
+    results = [
+        _start_server(
+            config,
+            dry_run=dry_run,
+            mode=mode,
+            run_stamp=run_stamp,
+            runner_override=runner,
+        )
+    ]
 
     if results[0].status == "failed":
         return {
             "config_path": str(config_path),
             "dry_run": dry_run,
             "mode": mode,
+            "runner": runner,
             "bodnar": configure_bodnar,
             "run_stamp": run_stamp,
             "results": results,
@@ -1732,12 +2102,22 @@ def start_gnss(
                     )
                 )
                 continue
-        results.append(_start_node(key, raw_node, defaults, dry_run=dry_run, run_stamp=run_stamp))
+        results.append(
+            _start_node(
+                key,
+                raw_node,
+                defaults,
+                dry_run=dry_run,
+                run_stamp=run_stamp,
+                runner_override=runner,
+            )
+        )
 
     return {
         "config_path": str(config_path),
         "dry_run": dry_run,
         "mode": mode,
+        "runner": runner,
         "bodnar": configure_bodnar,
         "run_stamp": run_stamp,
         "results": results,
@@ -2004,6 +2384,32 @@ def _stop_script(screen_name: str, process_match: str, grace_sec: int, log_path:
     return "\n".join(lines)
 
 
+def _systemd_stop_script(service_name: str, legacy_stop_script: str) -> tuple[str, str]:
+    """Build actual and display scripts that stop systemd and legacy runners."""
+
+    service = shlex.quote(service_name)
+    actual = "\n".join(
+        [
+            "set -euo pipefail",
+            f"systemctl --user stop {service} >/dev/null 2>&1 || true",
+            legacy_stop_script,
+            f"if systemctl --user is-active --quiet {service}; then",
+            f"  echo '[FAIL] systemd service {service_name} is still active'",
+            "  exit 1",
+            "fi",
+            f"echo '[OK] systemd service {service_name} is inactive'",
+        ]
+    )
+    display = "\n".join(
+        [
+            f"systemctl --user stop {service}",
+            "# stop any legacy screen session or matching Python process",
+            f"systemctl --user is-active --quiet {service}  # expected to be inactive",
+        ]
+    )
+    return actual, display
+
+
 def _server_stop_script(server_status: dict[str, Any]) -> tuple[str, str]:
     """Build the local Bash script that stops the GNSS server."""
 
@@ -2015,13 +2421,64 @@ def _server_stop_script(server_status: dict[str, Any]) -> tuple[str, str]:
     return _stop_script(screen, str(resolved["script"]), grace_sec, log_path), log_path
 
 
-def _stop_server(config: dict[str, Any], *, dry_run: bool) -> StopResult:
+def _stop_server(
+    config: dict[str, Any],
+    *,
+    dry_run: bool,
+    runner_override: str | None = None,
+) -> StopResult:
     """Stop the local GNSS server, or describe the command in dry-run mode."""
 
     server_status = _server_status(config)
     server = _server_config(config)
     server_status["config"] = server
     script, log_path = _server_stop_script(server_status)
+    runner, process = _runner_config(
+        config.get("defaults", {}),
+        config.get("server", {}),
+        "server",
+        runner_override,
+    )
+    if runner == "systemd":
+        service_name = _systemd_service_name(process["systemd"].get("service_name"))
+        script, display_script = _systemd_stop_script(service_name, script)
+        command = "bash -c " + shlex.quote(script)
+        if dry_run:
+            return StopResult(
+                kind="server",
+                key="server",
+                daq_name=str(server_status["daq_name"]),
+                host=str(server_status["host"]),
+                status="dry-run",
+                detail=f"would stop systemd service {service_name} and legacy processes",
+                required=True,
+                local=True,
+                command=command,
+                script=display_script,
+            )
+
+        result = _run_bash(
+            script,
+            timeout=float(server.get("shutdown_grace_sec", 5)) + 15.0,
+        )
+        ok = result.returncode == 0
+        return StopResult(
+            kind="server",
+            key="server",
+            daq_name=str(server_status["daq_name"]),
+            host=str(server_status["host"]),
+            status="stopped" if ok else "failed",
+            detail=f"systemd service {service_name} inactive" if ok else _format_cmd_result(result),
+            required=True,
+            local=True,
+            command=command,
+            script=display_script,
+        )
+
+    script = _stop_systemd_before_screen(
+        script,
+        _systemd_service_name(process["systemd"].get("service_name")),
+    )
     command = "bash -c " + shlex.quote(script)
 
     if dry_run:
@@ -2095,6 +2552,7 @@ def _stop_node(
     defaults: dict[str, Any],
     *,
     dry_run: bool,
+    runner_override: str | None = None,
 ) -> StopResult:
     """Stop one local or remote GNSS agent, or describe a dry run."""
 
@@ -2102,9 +2560,50 @@ def _stop_node(
     node = node_status["config"]
     is_local = _node_is_local(node)
     script, log_path = _agent_stop_script(node_status)
-    command = _node_command(node, script)
     required = _str_bool(node.get("required", False))
+    runner, process = _runner_config(defaults, raw_node, "agent", runner_override)
+    if runner == "systemd":
+        service_name = _systemd_service_name(process["systemd"].get("service_name"))
+        script, display_script = _systemd_stop_script(service_name, script)
+        command = _node_command(node, script)
+        if dry_run:
+            return StopResult(
+                kind="node",
+                key=key,
+                daq_name=str(node_status["daq_name"]),
+                host=str(node_status["host"]),
+                status="dry-run",
+                detail=f"would stop systemd service {service_name} and legacy processes",
+                required=required,
+                local=is_local,
+                command=command,
+                script=display_script,
+            )
 
+        result = _node_run(
+            node,
+            script,
+            timeout=float(node.get("shutdown_grace_sec", 5)) + 15.0,
+        )
+        ok = result.returncode == 0
+        return StopResult(
+            kind="node",
+            key=key,
+            daq_name=str(node_status["daq_name"]),
+            host=str(node_status["host"]),
+            status="stopped" if ok else "failed",
+            detail=f"systemd service {service_name} inactive" if ok else _format_cmd_result(result),
+            required=required,
+            local=is_local,
+            command=command,
+            script=display_script,
+        )
+
+    script = _stop_systemd_before_screen(
+        script,
+        _systemd_service_name(process["systemd"].get("service_name")),
+    )
+    command = _node_command(node, script)
     if dry_run:
         return StopResult(
             kind="node",
@@ -2311,6 +2810,7 @@ def stop_gnss(
     server_only: bool = False,
     agents_only: bool = False,
     compress_logs: bool = False,
+    runner: str | None = None,
 ) -> dict[str, Any]:
     """Stop GNSS agents and, when appropriate, the local GNSS server.
 
@@ -2318,6 +2818,7 @@ def stop_gnss(
     then stops the local server. If one or more --node filters are supplied, the
     default is intentionally narrower: only those agents are stopped, so a
     single-node maintenance action does not accidentally take down the server.
+    The configured runner is used unless runner supplies an explicit override.
     """
 
     config = load_config(config_path)
@@ -2329,13 +2830,23 @@ def stop_gnss(
 
     if stop_agents:
         for key, raw_node in _selected_node_items(config, nodes, include_disabled=include_disabled):
-            stop_result = _stop_node(key, raw_node, defaults, dry_run=dry_run)
+            stop_result = _stop_node(
+                key,
+                raw_node,
+                defaults,
+                dry_run=dry_run,
+                runner_override=runner,
+            )
             results.append(stop_result)
             if compress_logs and stop_result.status in {"stopped", "dry-run"}:
                 results.append(_node_compress_logs(key, raw_node, defaults, dry_run=dry_run))
 
     if stop_server:
-        stop_result = _stop_server(config, dry_run=dry_run)
+        stop_result = _stop_server(
+            config,
+            dry_run=dry_run,
+            runner_override=runner,
+        )
         results.append(stop_result)
         if compress_logs and stop_result.status in {"stopped", "dry-run"}:
             results.append(_server_compress_logs(config, dry_run=dry_run))
@@ -2346,6 +2857,7 @@ def stop_gnss(
         "server_only": server_only,
         "agents_only": agents_only,
         "compress_logs": compress_logs,
+        "runner": runner,
         "results": results,
     }
 
@@ -2367,6 +2879,8 @@ def _print_status(report: dict[str, Any]) -> None:
     """
 
     print(f"Config: {report['config_path']}")
+    if report.get("runner"):
+        print(f"Runner: {report['runner']} (override)")
     if report.get("verify_registers"):
         print(f"Timing: {report.get('mode', 'differential')}")
         print("Register verify: enabled")
@@ -2375,7 +2889,10 @@ def _print_status(report: dict[str, Any]) -> None:
         label = item["daq_name"]
         host = item["host"]
         status = _check_status(item["checks"])
-        print(f"{status:4} {item['kind']:6} {item['key']:12} {label:18} host={host}")
+        print(
+            f"{status:4} {item['kind']:6} {item['key']:12} {label:18} "
+            f"host={host} runner={item.get('runner', 'screen')}"
+        )
         for check in item["checks"]:
             mark = "OK" if check.ok else "FAIL"
             detail = f" -- {check.detail}" if check.detail else ""
@@ -2391,6 +2908,8 @@ def _print_start(report: dict[str, Any]) -> None:
     print(f"Mode:   {mode}")
     if report.get("mode"):
         print(f"Timing: {report['mode']}")
+    if report.get("runner"):
+        print(f"Runner: {report['runner']} (override)")
     print()
     for item in report["results"]:
         print(f"{item.status:8} {item.kind:6} {item.key:12} {item.daq_name:18} host={item.host}")
@@ -2417,6 +2936,8 @@ def _print_stop(report: dict[str, Any]) -> None:
     mode = "dry-run" if report.get("dry_run") else "stop"
     print(f"Config: {report['config_path']}")
     print(f"Mode:   {mode}")
+    if report.get("runner"):
+        print(f"Runner: {report['runner']} (override)")
     if report.get("compress_logs"):
         print("Compress logs: enabled")
     print()
@@ -2498,12 +3019,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             help=f"path to deployment JSON5 config (default: {DEFAULT_CONFIG})",
         )
 
+    def add_runner_argument(arg_parser: argparse.ArgumentParser) -> None:
+        """Add an optional process-runner override."""
+        arg_parser.add_argument(
+            "--runner",
+            choices=["screen", "systemd"],
+            default=None,
+            help="override process runner from deployment config",
+        )
+
     parser = argparse.ArgumentParser(description="GNSS deployment orchestrator")
     add_config_argument(parser, default=str(DEFAULT_CONFIG))
     sub = parser.add_subparsers(dest="command", required=True)
 
     status = sub.add_parser("status", help="validate config and check GNSS deployment prerequisites")
     add_config_argument(status)
+    add_runner_argument(status)
     status.add_argument("--node", action="append", default=[], help="limit status to a node key, host, or DAQ name")
     status.add_argument("--mode", choices=["differential", "absolute"], default="differential", help="GNSS timing mode for register verification")
     status.add_argument("--verify-registers", action="store_true", help="read receiver CFG registers and compare against the selected manifest")
@@ -2513,6 +3044,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     start = sub.add_parser("start", help="start the GNSS server and selected agents")
     add_config_argument(start)
+    add_runner_argument(start)
     start.add_argument("--node", action="append", default=[], help="limit start to a node key, host, or DAQ name")
     start.add_argument("--mode", choices=["differential", "absolute"], default="differential", help="GNSS timing mode")
     start.add_argument("--bodnar", action="store_true", help="configure Leo Bodnar LBE-1420 devices before starting agents")
@@ -2522,6 +3054,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     stop = sub.add_parser("stop", help="stop selected GNSS agents and optionally the server")
     add_config_argument(stop)
+    add_runner_argument(stop)
     stop.add_argument("--node", action="append", default=[], help="limit stop to a node key, host, or DAQ name")
     stop.add_argument("--include-disabled", action="store_true", help="include nodes marked present=false")
     stop.add_argument("--server-only", action="store_true", help="stop only the local GNSS server")
@@ -2573,6 +3106,7 @@ def main(argv: list[str] | None = None) -> int:
                 local_only=args.local_only,
                 verify_registers=args.verify_registers,
                 mode=args.mode,
+                runner=args.runner,
             )
             if args.json:
                 print(json.dumps(_jsonable(report), indent=2, sort_keys=True))
@@ -2596,6 +3130,7 @@ def main(argv: list[str] | None = None) -> int:
                 include_disabled=args.include_disabled,
                 mode=args.mode,
                 configure_bodnar=args.bodnar,
+                runner=args.runner,
             )
             if args.json:
                 print(json.dumps(_jsonable(report), indent=2, sort_keys=True))
@@ -2622,6 +3157,7 @@ def main(argv: list[str] | None = None) -> int:
                 server_only=args.server_only,
                 agents_only=args.agents_only,
                 compress_logs=args.compress_logs,
+                runner=args.runner,
             )
             if args.json:
                 print(json.dumps(_jsonable(report), indent=2, sort_keys=True))
