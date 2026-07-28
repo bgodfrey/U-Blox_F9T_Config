@@ -31,7 +31,7 @@ import json5
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_CONFIG = Path("gnss_deployment.json5")
+DEFAULT_CONFIG = SCRIPT_DIR / "gnss_deployment.json5"
 
 
 class ConfigLoadError(RuntimeError):
@@ -3060,7 +3060,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             help="override process runner from deployment config",
         )
 
-    parser = argparse.ArgumentParser(description="GNSS deployment orchestrator")
+    parser = argparse.ArgumentParser(prog="gnss_orchestrator.py", description="GNSS deployment orchestrator")
     add_config_argument(parser, default=str(DEFAULT_CONFIG))
     sub = parser.add_subparsers(dest="command", required=True)
 
