@@ -68,6 +68,7 @@ GNSS_REDIS_STATUS_ENABLED = os.getenv("GNSS_REDIS_STATUS_ENABLED", "0").strip().
 	"yes",
 	"on",
 }
+GNSS_REDIS_STATUS_PUBLISHER = os.getenv("GNSS_REDIS_STATUS_PUBLISHER", "server").strip().lower()
 GNSS_REDIS_STATUS_GRPC_ADDR = os.getenv("GNSS_REDIS_STATUS_GRPC_ADDR", os.getenv("TELEM_SVC_ADDR", "127.0.0.1:50051"))
 GNSS_REDIS_STATUS_DEVICE_TYPE = os.getenv("GNSS_REDIS_STATUS_DEVICE_TYPE", "gnss")
 LOGGING_DIR.mkdir(parents=True, exist_ok=True)
@@ -178,7 +179,7 @@ def split_grpc_addr(addr: str) -> tuple[str, int]:
 
 
 REDIS_STATUS = RedisStatusPublisher(
-	enabled=GNSS_REDIS_STATUS_ENABLED,
+	enabled=GNSS_REDIS_STATUS_ENABLED and GNSS_REDIS_STATUS_PUBLISHER == "server",
 	grpc_addr=GNSS_REDIS_STATUS_GRPC_ADDR,
 	device_type=GNSS_REDIS_STATUS_DEVICE_TYPE,
 )
