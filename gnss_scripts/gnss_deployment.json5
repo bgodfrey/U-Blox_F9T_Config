@@ -78,6 +78,12 @@
       "frequency_hz": 10000000,
       "gnss": "recommended"
     },
+    "redis_status": {
+      "enabled": true,
+      "publisher": "agent",
+      "addr": "127.0.0.1:50051",
+      "device_type": "gnss"
+    },
 
     // Optional policy knobs for the future Python orchestrator.
     "start_only_if_receiver_detected": true,

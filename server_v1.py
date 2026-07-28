@@ -66,6 +66,15 @@ TELEM_MAX_FILE_MB = 128.0
 TELEM_FSYNC_SECONDS = 5.0
 
 TELEM_SVC_ADDR = os.getenv("TELEM_SVC_ADDR", "127.0.0.1:50052")
+GNSS_REDIS_STATUS_ENABLED = os.getenv("GNSS_REDIS_STATUS_ENABLED", "0").strip().lower() in {
+	"1",
+	"true",
+	"yes",
+	"on",
+}
+GNSS_REDIS_STATUS_PUBLISHER = os.getenv("GNSS_REDIS_STATUS_PUBLISHER", "server").strip().lower()
+GNSS_REDIS_STATUS_GRPC_ADDR = os.getenv("GNSS_REDIS_STATUS_GRPC_ADDR", TELEM_SVC_ADDR)
+GNSS_REDIS_STATUS_DEVICE_TYPE = os.getenv("GNSS_REDIS_STATUS_DEVICE_TYPE", "gnss")
 LOGGING_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -101,6 +110,84 @@ LAST_SEEN = {}
 #_telem_fwd_task: asyncio.Task | None = None
 
 # ------------------------------ helpers -------------------------------------
+
+
+class RedisStatusPublisher:
+	"""Best-effort bridge from GNSS live telemetry into PANOSETI Telemetry/Redis."""
+
+	def __init__(self, enabled: bool, grpc_addr: str, device_type: str) -> None:
+		self.enabled = enabled
+		self.grpc_addr = grpc_addr
+		self.device_type = device_type
+		self.client = None
+		self.warned_unavailable = False
+
+	def _get_client(self):
+		if self.client is not None:
+			return self.client
+
+		host, port = split_grpc_addr(self.grpc_addr)
+		from panoseti_grpc.telemetry.client import TelemetryClient
+
+		self.client = TelemetryClient(host=host, port=port)
+		return self.client
+
+	def publish(self, device_id: str, alias: str, rec: dict) -> None:
+		if not self.enabled:
+			return
+
+		extra_data = {
+			"alias": alias,
+			"unix_ms": int(rec.get("unix_ms", 0)),
+			"temp_c": float(rec.get("temp_c", 0.0)),
+			"qerr_ns": rec.get("qerr_ns"),
+			"qerr_valid": bool(rec.get("qerr_valid", False)),
+			"qerr_age_ms": int(rec.get("qerr_age_ms", 0)),
+			"nav_sat_valid": bool(rec.get("nav_sat_valid", False)),
+			"nav_sat_age_ms": int(rec.get("nav_sat_age_ms", 0)),
+			"telemetry_stale": bool(rec.get("telemetry_stale", False)),
+			"utc_ok": bool(rec.get("utc_ok", False)),
+			"num_vis": int(rec.get("num_vis", 0)),
+			"num_used": int(rec.get("num_used", 0)),
+			"gps_used": int(rec.get("gps_used", 0)),
+			"gal_used": int(rec.get("gal_used", 0)),
+			"bds_used": int(rec.get("bds_used", 0)),
+			"glo_used": int(rec.get("glo_used", 0)),
+			"avg_cno": float(rec.get("avg_cno", 0.0)),
+			"pdop": float(rec.get("pdop", 0.0)),
+		}
+
+		payload = {
+			"satellites": int(rec.get("num_vis", 0)),
+			"lat": 0.0,
+			"lon": 0.0,
+			"fix_mode": "3D" if rec.get("utc_ok") else "none",
+			"extra_data": {key: value for key, value in extra_data.items() if value is not None},
+		}
+
+		try:
+			self._get_client().log_strict(self.device_type, device_id, payload)
+			self.warned_unavailable = False
+		except Exception as exc:
+			if not self.warned_unavailable:
+				log.warning("[redis_status] publish failed: %s", exc)
+				self.warned_unavailable = True
+
+
+def split_grpc_addr(addr: str) -> tuple[str, int]:
+	"""Split host:port for TelemetryClient."""
+
+	host, sep, port_str = addr.rpartition(":")
+	if not sep or not host:
+		raise ValueError(f"invalid gRPC address {addr!r}; expected host:port")
+	return host, int(port_str)
+
+
+REDIS_STATUS = RedisStatusPublisher(
+	enabled=GNSS_REDIS_STATUS_ENABLED and GNSS_REDIS_STATUS_PUBLISHER == "server",
+	grpc_addr=GNSS_REDIS_STATUS_GRPC_ADDR,
+	device_type=GNSS_REDIS_STATUS_DEVICE_TYPE,
+)
 
 
 def configure_telemetry_dir(
@@ -631,6 +718,8 @@ class ControlServicer(rpc.ControlServicer):
 								LATEST_TELEM[device_id] = rec
 								#alias = getattr(m.ack, "alias", "") if hasattr(m, "ack") else ""
 								jlog("telem", device_id, alias = alias, **rec)
+								if REDIS_STATUS.enabled:
+									asyncio.create_task(asyncio.to_thread(REDIS_STATUS.publish, device_id, alias, rec))
 
 						elif m.HasField("ping"):
 							 # --- PING: currently a no-op (pings are server→agent in this design) ---

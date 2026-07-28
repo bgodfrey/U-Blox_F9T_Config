@@ -637,6 +637,24 @@ def _timestamped_log_command(args: list[Any], log_path: str) -> str:
     )
 
 
+def _redis_status_env(config: dict[str, Any], *, target: str) -> list[str]:
+    """Return environment assignments for one GNSS latest-status publisher target."""
+
+    redis_status = config.get("redis_status") or {}
+    configured_enabled = _str_bool(redis_status.get("enabled", False))
+    publisher = str(redis_status.get("publisher", "server")).strip().lower()
+    if publisher not in {"server", "agent"}:
+        publisher = "server"
+    enabled = configured_enabled and publisher == target
+    env = [f"GNSS_REDIS_STATUS_ENABLED={'1' if enabled else '0'}"]
+    env.append(f"GNSS_REDIS_STATUS_PUBLISHER={publisher}")
+    if redis_status.get("addr"):
+        env.append(f"GNSS_REDIS_STATUS_GRPC_ADDR={redis_status['addr']}")
+    if redis_status.get("device_type"):
+        env.append(f"GNSS_REDIS_STATUS_DEVICE_TYPE={redis_status['device_type']}")
+    return env
+
+
 def _screen_grep_pattern(screen_name: str) -> str:
     """Return a screen -ls grep pattern for an exact screen session name."""
 
@@ -858,6 +876,7 @@ def _render_agent_service(
         "-v",
         node.get("verbosity", 2),
     ]
+    args = ["env", *_redis_status_env(node, target="agent"), *args]
     service_name = _systemd_service_name(systemd.get("service_name"))
     unit = _render_systemd_template(
         "gnss-agent.service.template",
@@ -932,6 +951,7 @@ def _render_server_service(
     ]
     if receiver_manifest_path:
         args.extend(["--config", receiver_manifest_path])
+    args = ["env", *_redis_status_env(server, target="server"), *args]
 
     service_name = _systemd_service_name(systemd.get("service_name"))
     unit = _render_systemd_template(
@@ -1523,6 +1543,7 @@ def _server_launch_script(server_status: dict[str, Any], run_stamp: str) -> tupl
     server_args.extend(_telemetry_runtime_args(server))
     if resolved.get("receiver_manifest"):
         server_args.extend(["--config", resolved["receiver_manifest"]])
+    server_args = ["env", *_redis_status_env(server, target="server"), *server_args]
 
     inner = _timestamped_log_command(server_args, log_path)
     script = "\n".join(
@@ -1775,6 +1796,7 @@ def _agent_launch_script(node_status: dict[str, Any], run_stamp: str) -> tuple[s
         resolved["verbosity"],
     ]
     agent_args.extend(_telemetry_runtime_args(node))
+    agent_args = ["env", *_redis_status_env(node, target="agent"), *agent_args]
     inner = _timestamped_log_command(agent_args, log_path)
     script = "\n".join(
         [

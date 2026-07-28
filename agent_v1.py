@@ -70,6 +70,15 @@ UBX_PROTO_RTCM3 = 0x20
 SAVE_TELEM_LOCAL  = True          # write JSONL locally
 SAVE_TELEM_REMOTE = True          # send to server over Control.Pipe
 _VERBOSE_TELEM = False            # include extra local-only telemetry when -v 3
+GNSS_REDIS_STATUS_ENABLED = os.getenv("GNSS_REDIS_STATUS_ENABLED", "0").strip().lower() in {
+	"1",
+	"true",
+	"yes",
+	"on",
+}
+GNSS_REDIS_STATUS_PUBLISHER = os.getenv("GNSS_REDIS_STATUS_PUBLISHER", "agent").strip().lower()
+GNSS_REDIS_STATUS_GRPC_ADDR = os.getenv("GNSS_REDIS_STATUS_GRPC_ADDR", os.getenv("TELEM_SVC_ADDR", "127.0.0.1:50051"))
+GNSS_REDIS_STATUS_DEVICE_TYPE = os.getenv("GNSS_REDIS_STATUS_DEVICE_TYPE", "gnss")
 QERR_STALE_MS = 3000              # qerr requires fresh UBX-TIM-TP at ~1 Hz
 NAV_SAT_STALE_MS = 10000          # satellite diagnostics are less critical
 TELEM_STALE_WARN_S = 30.0         # throttle stale telemetry warnings
@@ -103,6 +112,8 @@ _ping_task: Optional[asyncio.Task] = None
 _cfg_apply_lock = asyncio.Lock()                    # Serialize config application
 _serial_stop_evt: Optional[asyncio.Event] = None
 _shutdown_evt   = asyncio.Event()                   # Whole‑agent shutdown (global)
+_device_id: str = ""
+_alias: str = ""
 
 _role = {"task": None, "name": None}                # Active role task + label
 
@@ -143,6 +154,84 @@ def install_signal_handlers(stop_event: asyncio.Event) -> None:
 		except NotImplementedError:
 			# Pass if this isn't available.
 			pass
+
+
+def split_grpc_addr(addr: str) -> tuple[str, int]:
+	"""Split host:port for TelemetryClient."""
+
+	host, sep, port_str = addr.rpartition(":")
+	if not sep or not host:
+		raise ValueError(f"invalid gRPC address {addr!r}; expected host:port")
+	return host, int(port_str)
+
+
+class RedisStatusPublisher:
+	"""Best-effort bridge from agent telemetry into PANOSETI Telemetry/Redis."""
+
+	def __init__(self, enabled: bool, grpc_addr: str, device_type: str) -> None:
+		self.enabled = enabled
+		self.grpc_addr = grpc_addr
+		self.device_type = device_type
+		self.client = None
+		self.warned_unavailable = False
+
+	def _get_client(self):
+		if self.client is not None:
+			return self.client
+
+		host, port = split_grpc_addr(self.grpc_addr)
+		from panoseti_grpc.telemetry.client import TelemetryClient
+
+		self.client = TelemetryClient(host=host, port=port)
+		return self.client
+
+	def publish(self, device_id: str, alias: str, rec: dict) -> None:
+		if not self.enabled or not device_id:
+			return
+
+		extra_data = {
+			"alias": alias,
+			"unix_ms": int(rec.get("unix_ms", 0)),
+			"temp_c": float(rec.get("temp_c", 0.0)),
+			"qerr_ns": rec.get("qerr_ns"),
+			"qerr_valid": bool(rec.get("qerr_valid", False)),
+			"qerr_age_ms": int(rec.get("qerr_age_ms", 0) or 0),
+			"nav_sat_valid": bool(rec.get("nav_sat_valid", False)),
+			"nav_sat_age_ms": int(rec.get("nav_sat_age_ms", 0) or 0),
+			"telemetry_stale": bool(rec.get("telemetry_stale", False)),
+			"utc_ok": bool(rec.get("utc_ok", False)),
+			"num_vis": int(rec.get("num_vis", 0)),
+			"num_used": int(rec.get("num_used", 0)),
+			"gps_used": int(rec.get("gps_used", 0)),
+			"gal_used": int(rec.get("gal_used", 0)),
+			"bds_used": int(rec.get("bds_used", 0)),
+			"glo_used": int(rec.get("glo_used", 0)),
+			"avg_cno": float(rec.get("avg_cno", 0.0)),
+			"pdop": float(rec.get("pdop", 0.0)),
+		}
+
+		payload = {
+			"satellites": int(rec.get("num_vis", 0)),
+			"lat": 0.0,
+			"lon": 0.0,
+			"fix_mode": "3D" if rec.get("utc_ok") else "none",
+			"extra_data": {key: value for key, value in extra_data.items() if value is not None},
+		}
+
+		try:
+			self._get_client().log_strict(self.device_type, device_id, payload)
+			self.warned_unavailable = False
+		except Exception as exc:
+			if not self.warned_unavailable:
+				log.warning("[redis_status] publish failed: %s", exc)
+				self.warned_unavailable = True
+
+
+REDIS_STATUS = RedisStatusPublisher(
+	enabled=GNSS_REDIS_STATUS_ENABLED and GNSS_REDIS_STATUS_PUBLISHER == "agent",
+	grpc_addr=GNSS_REDIS_STATUS_GRPC_ADDR,
+	device_type=GNSS_REDIS_STATUS_DEVICE_TYPE,
+)
 
 """Cancel a task and await its completion, suppressing CancelledError. Useful for orderly teardown when a task may be mid‑await.
 """
@@ -580,6 +669,39 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 				)
 				agg.last_telem_stale_warning_monotonic = now_mono
 			qerr_ns = round(qerr_ps / 1000.0, 3)
+			rec = {
+				"ts": unix_ms,            # local write time (ms)
+				"unix_ms": unix_ms,       # device-reported epoch (ms)
+				"temp_c": temp_c,
+				"qerr_ns": qerr_ns if qerr_valid else None,
+				"qerr_valid": qerr_valid,
+				"qerr_age_ms": qerr_age_ms,
+				"nav_sat_valid": nav_sat_valid,
+				"nav_sat_age_ms": nav_sat_age_ms,
+				"telemetry_stale": telemetry_stale,
+				"utc_ok": utc_ok,
+				"num_vis": num_vis, "num_used": num_used,
+				"gps_used": gps_used, "gal_used": gal_used,
+				"bds_used": bds_used, "glo_used": glo_used,
+				"avg_cno": round(avg_cno, 4), "pdop": round(pdop, 4),
+			}
+			if _VERBOSE_TELEM:
+				rec.update({
+					"fix_type": getattr(agg, "fix_type", None),
+					"gnss_fix_ok": getattr(agg, "gnss_fix_ok", None),
+					"diff_soln": getattr(agg, "diff_soln", None),
+					"carr_soln": getattr(agg, "carr_soln", None),
+					"confirmed_date": getattr(agg, "confirmed_date", None),
+					"confirmed_time": getattr(agg, "confirmed_time", None),
+					"nav_pvt_num_sv": getattr(agg, "nav_pvt_num_sv", None),
+					"nav_pvt_lat_deg": getattr(agg, "nav_pvt_lat_deg", None),
+					"nav_pvt_lon_deg": getattr(agg, "nav_pvt_lon_deg", None),
+					"nav_pvt_height_m": getattr(agg, "nav_pvt_height_m", None),
+					"nav_pvt_hmsl_m": getattr(agg, "nav_pvt_hmsl_m", None),
+					"nav_pvt_hacc_m": getattr(agg, "nav_pvt_hacc_m", None),
+					"nav_pvt_vacc_m": getattr(agg, "nav_pvt_vacc_m", None),
+					"nav_sat_top": getattr(agg, "nav_sat_top", []),
+				})
 
 			# protobuf payload (for remote)
 			t = pb.Telemetry(
@@ -601,44 +723,14 @@ async def telem_publisher(writer: CallWriter, agg: TelemetryAgg, stop_evt: async
 			# local JSONL record (flat & compact)
 			if SAVE_TELEM_LOCAL:
 				t0 = time.monotonic()
-				rec = {
-					"ts": unix_ms,            # local write time (ms)
-					"unix_ms": unix_ms,       # device-reported epoch (ms)
-					"temp_c": temp_c,
-					"qerr_ns": qerr_ns if qerr_valid else None,
-					"qerr_valid": qerr_valid,
-					"qerr_age_ms": qerr_age_ms,
-					"nav_sat_valid": nav_sat_valid,
-					"nav_sat_age_ms": nav_sat_age_ms,
-					"telemetry_stale": telemetry_stale,
-					"utc_ok": utc_ok,
-					"num_vis": num_vis, "num_used": num_used,
-					"gps_used": gps_used, "gal_used": gal_used,
-					"bds_used": bds_used, "glo_used": glo_used,
-					"avg_cno": round(avg_cno, 4), "pdop": round(pdop, 4),
-				}
-				if _VERBOSE_TELEM:
-					rec.update({
-						"fix_type": getattr(agg, "fix_type", None),
-						"gnss_fix_ok": getattr(agg, "gnss_fix_ok", None),
-						"diff_soln": getattr(agg, "diff_soln", None),
-						"carr_soln": getattr(agg, "carr_soln", None),
-						"confirmed_date": getattr(agg, "confirmed_date", None),
-						"confirmed_time": getattr(agg, "confirmed_time", None),
-						"nav_pvt_num_sv": getattr(agg, "nav_pvt_num_sv", None),
-						"nav_pvt_lat_deg": getattr(agg, "nav_pvt_lat_deg", None),
-						"nav_pvt_lon_deg": getattr(agg, "nav_pvt_lon_deg", None),
-						"nav_pvt_height_m": getattr(agg, "nav_pvt_height_m", None),
-						"nav_pvt_hmsl_m": getattr(agg, "nav_pvt_hmsl_m", None),
-						"nav_pvt_hacc_m": getattr(agg, "nav_pvt_hacc_m", None),
-						"nav_pvt_vacc_m": getattr(agg, "nav_pvt_vacc_m", None),
-						"nav_sat_top": getattr(agg, "nav_sat_top", []),
-					})
 				# fire-and-forget (don’t await if you want even looser coupling)
 				await _append_jsonl(rec)
 				dt = time.monotonic() - t0
 				if dt > 0.05:
 					log.warning("[telem] append_jsonl took %.3fs", dt)
+
+			if REDIS_STATUS.enabled:
+				asyncio.create_task(asyncio.to_thread(REDIS_STATUS.publish, _device_id, _alias, rec))
 
 			# remote publish (guarded + optional)
 			if SAVE_TELEM_REMOTE:
@@ -1472,6 +1564,7 @@ async def subscribe_loop(ser, ser_lock, mount, token):
 		- On exit (cancel/error), watchdog and role are stopped, telemetry publisher is signaled.
 	"""
 async def control_pipe(ser, ser_lock, uid_hex, fwver, protver, hwver, mount_token_holder):
+	global _alias
 	try:
 		 # Open a gRPC channel to the Control service with keepalives so both ends can detect dead peers (NAT, link flap, etc.) promptly.
 		async with grpc.aio.insecure_channel(
@@ -1640,6 +1733,7 @@ async def control_pipe(ser, ser_lock, uid_hex, fwver, protver, hwver, mount_toke
 						# Server assigns: role, mount, token → start the bidirectional stream.
 						role_enum = m.ack.role
 						log.info("control: ack role=%s", pb.Role.Name(role_enum))
+						_alias = getattr(m.ack, "alias", "") or ""
 						mount_token_holder["mount"] = m.ack.mount
 						mount_token_holder["token"] = m.ack.token
 						mount_token_holder["role"]  = role_enum
@@ -1806,7 +1900,7 @@ Entry point: discover device, open control pipe, and manage lifetime.
 • On error: logs and retries after a short delay.
 """
 async def main():
-	global _LOG_PATH, _CAST_ADDR, _CTRL_ADDR, _VERBOSE_TELEM
+	global _LOG_PATH, _CAST_ADDR, _CTRL_ADDR, _VERBOSE_TELEM, _device_id
 	stop = asyncio.Event()
 	install_signal_handlers(stop)
 
@@ -1833,6 +1927,7 @@ async def main():
 		
 		print(f"[agent] discovering u-blox serial port ({args.port or 'auto'})...", flush=True)
 		port, uid = discover_f9x(port = args.port)
+		_device_id = uid
 		set_logging_alias(uid)
 		setup_logging(args.verbosity, log_file = _LOG_PATH or None, console = False)
 		#log = logging.getLogger("agent") 

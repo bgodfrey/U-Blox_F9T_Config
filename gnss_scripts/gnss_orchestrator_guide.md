@@ -1410,6 +1410,43 @@ tail -n 100 /home/panoseti/gnss_logging/gnss_agent.log
 ls -ltr /home/panoseti/gnss_telem
 ```
 
+### Redis Latest Status
+
+The JSONL telemetry files remain the durable run record. The GNSS server can
+also mirror the latest live GNSS status into the PANOSETI Telemetry service,
+which stores it in Redis for dashboards and health checks.
+
+This is controlled by the `redis_status` block in `gnss_deployment.json5`:
+
+```json5
+"redis_status": {
+  "enabled": true,
+  "addr": "127.0.0.1:50051",
+  "device_type": "gnss"
+}
+```
+
+When `start` launches the GNSS server, the orchestrator passes these settings as
+environment variables:
+
+```bash
+GNSS_REDIS_STATUS_ENABLED=1
+GNSS_REDIS_STATUS_GRPC_ADDR=127.0.0.1:50051
+GNSS_REDIS_STATUS_DEVICE_TYPE=gnss
+```
+
+The GNSS server still writes telemetry JSONL as before. When agent telemetry is
+received over `Control.Pipe`, the server also publishes a best-effort latest
+status update through PANOSETI Telemetry. If the Telemetry service or Redis is
+unavailable, GNSS control, RTCM routing, and JSONL logging continue running.
+
+With the default PANOSETI Telemetry configuration, Redis keys use the GNSS
+prefix from `telemetry_config.toml`, for example:
+
+```text
+UBLOX_ZED-F9T_D92EAA4324
+```
+
 ## JSON Output
 
 All commands support `--json`.
