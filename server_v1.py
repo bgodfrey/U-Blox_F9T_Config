@@ -215,6 +215,19 @@ def configure_telemetry_dir(
 	)
 
 
+def configure_logging_dir(log_dir: str | None) -> None:
+	"""Set the server log directory before file logging is configured."""
+
+	global LOGGING_DIR, _LOG_PATH_LOGGING
+	if log_dir:
+		path = Path(log_dir).expanduser()
+		if not path.is_absolute():
+			path = REPO_ROOT / path
+		LOGGING_DIR = path
+	LOGGING_DIR.mkdir(parents=True, exist_ok=True)
+	_LOG_PATH_LOGGING = str(LOGGING_DIR / f"SERVER_{_START_STR}.txt")
+
+
 # Exit cleanly on SIGINT/SIGTERM (Unix).
 def install_signal_handlers(stop_evt: asyncio.Event) -> None:
 	loop = asyncio.get_running_loop()
@@ -239,6 +252,7 @@ def parse_args():
 	p.add_argument("--config", default = None, help = "optional path to config file")
 	p.add_argument("--ip", default = "0.0.0.0:50051", help = "IP address to bind to default is 0.0.0.0:50051")
 	p.add_argument("--log-file", default="", help="optional file path")
+	p.add_argument("--log-dir", default=str(LOGGING_DIR), help="directory for server log output")
 	p.add_argument("--timing-mode", choices=["differential", "absolute"], default="differential", help="runtime timing mode")
 	p.add_argument("--telem-dir", default=str(TELEM_DIR), help="directory for server telemetry JSONL output")
 	p.add_argument("--telem-max-file-mb", type=float, default=TELEM_MAX_FILE_MB, help="rotate server telemetry after this many MB; <=0 disables size rotation")
@@ -898,6 +912,7 @@ if __name__ == "__main__":
 	# Entrypoint: Run the server’s main function and allow KeyboardInterrupt to exit cleanly.
 	try:
 		args = parse_args()
+		configure_logging_dir(args.log_dir)
 		configure_telemetry_dir(
 			args.telem_dir,
 			telem_max_file_mb=args.telem_max_file_mb,

@@ -917,6 +917,7 @@ def _render_server_service(
     repo = str(server.get("repo") or "")
     script_value = str(server.get("script") or server.get("server_script") or "server_v1.py")
     server_script = _resolve_under_repo(repo, script_value)
+    logdir = _resolve_under_repo(repo, str(server.get("logdir") or "logging"))
     telem_dir = _resolve_under_repo(repo, str(server.get("telem_dir") or "telemetry"))
     receiver_manifest = mode_config.get("receiver_manifest") or server.get("receiver_manifest")
     receiver_manifest_path = (
@@ -928,6 +929,7 @@ def _render_server_service(
         "repo": repo,
         "script": server_script,
         "bind_addr": server.get("bind_addr"),
+        "logdir": logdir,
         "telem_dir": telem_dir,
     }
     _require_config_values("server", required_values, list(required_values))
@@ -940,6 +942,8 @@ def _render_server_service(
         server.get("bind_addr", "0.0.0.0:50051"),
         "--timing-mode",
         mode_config.get("timing_mode", mode),
+        "--log-dir",
+        logdir,
         "--telem-dir",
         telem_dir,
         "--telem-max-file-mb",
@@ -967,6 +971,7 @@ def _render_server_service(
         **server,
         "repo": repo,
         "script": server_script,
+        "logdir": logdir,
         "telem_dir": telem_dir,
         "receiver_manifest": receiver_manifest_path,
         "timing_mode": mode_config.get("timing_mode", mode),
@@ -1535,6 +1540,8 @@ def _server_launch_script(server_status: dict[str, Any], run_stamp: str) -> tupl
         server.get("bind_addr", "0.0.0.0:50051"),
         "--timing-mode",
         server.get("timing_mode", "differential"),
+        "--log-dir",
+        resolved["logdir"],
         "--telem-dir",
         resolved["telem_dir"],
         "-v",
