@@ -3,7 +3,7 @@
 
 The status command is intentionally read-only:
 
-    python gnss_scripts/gnss_orchestrator.py status
+    ublox-f9t status
 
 It validates the deployment inventory and checks local/remote prerequisites.
 The start and stop commands use the same inventory and support screen or
@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import socket
 import subprocess
 import sys
@@ -190,6 +191,44 @@ def _resolve_under_repo(repo: str, value: str) -> str:
     return str(Path(repo) / value)
 
 
+def _resolve_runtime_path(repo: str, value: str) -> str:
+    """Resolve a repo-relative path or a resource shipped in this distribution."""
+
+    if value.startswith("package:"):
+        name = value.removeprefix("package:")
+        if not name or Path(name).name != name:
+            raise ValueError(f"invalid package resource {value!r}")
+        return str(SCRIPT_DIR.parent / name)
+    return _resolve_under_repo(repo, value) if repo else value
+
+
+def _tool_command(item: dict[str, Any], kind: str) -> list[str] | None:
+    """Return an installed CLI command for a server or agent, when configured."""
+
+    value = item.get("tool_command")
+    if not value:
+        return None
+    command = [str(part) for part in value] if isinstance(value, list) else shlex.split(str(value))
+    if not command:
+        raise ValueError("tool_command must contain an executable")
+    return [*command, kind]
+
+
+def _runtime_command(item: dict[str, Any], kind: str, script: str) -> list[str]:
+    """Build an installed-tool command or the legacy Python/script command."""
+
+    command = _tool_command(item, kind)
+    if command is not None:
+        return command
+    return [str(item.get("python") or ""), "-u", script]
+
+
+def _working_directory(item: dict[str, Any]) -> str:
+    """Return the process working directory for screen and systemd runners."""
+
+    return str(item.get("working_directory") or item.get("repo") or Path.home())
+
+
 def _bodnar_config(defaults: dict[str, Any], node: dict[str, Any]) -> dict[str, Any]:
     """Merge default and per-node Leo Bodnar settings."""
 
@@ -199,16 +238,26 @@ def _bodnar_config(defaults: dict[str, Any], node: dict[str, Any]) -> dict[str, 
 
 
 def _bodnar_paths(defaults: dict[str, Any], node: dict[str, Any]) -> dict[str, Any]:
-    """Resolve the Bodnar Python, repo, and script paths for one node."""
+    """Resolve an installed Bodnar command or its legacy script paths."""
 
     bodnar = _bodnar_config(defaults, node)
     repo = str(bodnar.get("repo") or "")
     script = str(bodnar.get("configure_script") or "lbe-1420-conf.py")
     python = str(bodnar.get("python") or node.get("python") or "")
+    raw_command = bodnar.get("tool_command")
+    tool_command = (
+        [str(part) for part in raw_command]
+        if isinstance(raw_command, list)
+        else shlex.split(str(raw_command)) if raw_command else []
+    )
+    if raw_command and not tool_command:
+        raise ValueError("bodnar.tool_command must contain an executable")
     return {
         "python": python,
         "repo": repo,
         "script": _resolve_under_repo(repo, script) if repo else script,
+        "tool_command": tool_command,
+        "working_directory": str(bodnar.get("working_directory") or repo or Path.home()),
     }
 
 
@@ -343,13 +392,19 @@ def _node_preflight_script(paths: dict[str, str], *, local: bool) -> str:
 
     prefix = "local" if local else "remote"
     checks = [
-        (f"{prefix} -x " + paths["python"], "-x", paths["python"], paths["python"]),
-        (f"{prefix} -d " + paths["repo"], "-d", paths["repo"], paths["repo"]),
-        (f"{prefix} -f " + paths["agent_script"], "-f", paths["agent_script"], paths["agent_script"]),
-        (f"{prefix} -x " + paths["find_ublox_script"], "-x", paths["find_ublox_script"], paths["find_ublox_script"]),
         (f"{prefix} logdir parent exists", "-d", os.path.dirname(paths["logdir"]), os.path.dirname(paths["logdir"])),
         (f"{prefix} telem_dir parent exists", "-d", os.path.dirname(paths["telem_dir"]), os.path.dirname(paths["telem_dir"])),
     ]
+    if not paths.get("tool_executable"):
+        checks[0:0] = [
+            (f"{prefix} -x " + paths["python"], "-x", paths["python"], paths["python"]),
+            (f"{prefix} -d " + paths["repo"], "-d", paths["repo"], paths["repo"]),
+            (f"{prefix} -f " + paths["agent_script"], "-f", paths["agent_script"], paths["agent_script"]),
+        ]
+    if paths.get("find_ublox_script"):
+        checks.append(
+            (f"{prefix} -x " + paths["find_ublox_script"], "-x", paths["find_ublox_script"], paths["find_ublox_script"])
+        )
 
     lines = [
         "emit_check() {",
@@ -364,16 +419,29 @@ def _node_preflight_script(paths: dict[str, str], *, local: bool) -> str:
         "  fi",
         "}",
     ]
+    if paths.get("tool_executable"):
+        tool = paths["tool_executable"]
+        label = f"{prefix} installed tool {tool}"
+        lines.extend(
+            [
+                f"if tool_path=$(command -v {shlex.quote(tool)}); then",
+                f"  printf 'CHECK\\tOK\\t%s\\t%s\\n' {shlex.quote(label)} \"$tool_path\"",
+                "else",
+                f"  printf 'CHECK\\tFAIL\\t%s\\t%s\\n' {shlex.quote(label)} {shlex.quote(tool)}",
+                "fi",
+            ]
+        )
     for label, test_arg, path, detail in checks:
         lines.append(
             "emit_check "
             + " ".join(shlex.quote(value) for value in [label, test_arg, path, detail])
         )
 
-    find_ublox = shlex.quote(paths["find_ublox_script"])
+    detect_command = paths.get("detect_command") or [paths["find_ublox_script"]]
+    detect = _shell_join([str(part) for part in detect_command])
     lines.extend(
         [
-            "gnss_output=$(" + find_ublox + " 2>&1)",
+            "gnss_output=$(" + detect + " 2>&1)",
             "gnss_rc=$?",
             "gnss_output=${gnss_output//$'\\n'/; }",
             "if [ \"$gnss_rc\" -eq 0 ]; then",
@@ -411,14 +479,17 @@ def _register_verify_script(node: dict[str, Any], manifest_path: str, role: str 
     )
 
 
-def _remote_bodnar_status_script(paths: dict[str, str], timeout_sec: float) -> str:
+def _remote_bodnar_status_script(paths: dict[str, Any], timeout_sec: float) -> str:
     """Build a remote read-only Bodnar preflight/status script."""
 
-    checks = [
-        ("bodnar python executable", "-x", paths["python"], paths["python"]),
-        ("bodnar repo directory", "-d", paths["repo"], paths["repo"]),
-        ("bodnar configure script", "-f", paths["script"], paths["script"]),
-    ]
+    tool_command = paths.get("tool_command") or []
+    checks = []
+    if not tool_command:
+        checks = [
+            ("bodnar python executable", "-x", paths["python"], paths["python"]),
+            ("bodnar repo directory", "-d", paths["repo"], paths["repo"]),
+            ("bodnar configure script", "-f", paths["script"], paths["script"]),
+        ]
     lines = [
         "emit_check() {",
         "  label=$1",
@@ -433,6 +504,18 @@ def _remote_bodnar_status_script(paths: dict[str, str], timeout_sec: float) -> s
         "}",
         "ok=1",
     ]
+    if tool_command:
+        executable = str(tool_command[0])
+        lines.extend(
+            [
+                f"if tool_path=$(command -v {shlex.quote(executable)}); then",
+                "  printf 'CHECK\\tOK\\tbodnar installed tool\\t%s\\n' \"$tool_path\"",
+                "else",
+                f"  printf 'CHECK\\tFAIL\\tbodnar installed tool\\t%s\\n' {shlex.quote(executable)}",
+                "  ok=0",
+                "fi",
+            ]
+        )
     for label, test_arg, path, detail in checks:
         lines.append(
             "emit_check "
@@ -440,11 +523,12 @@ def _remote_bodnar_status_script(paths: dict[str, str], timeout_sec: float) -> s
         )
         lines.append(f"test {shlex.quote(test_arg)} {shlex.quote(path)} || ok=0")
 
-    cmd = _shell_join([paths["python"], paths["script"], "--status"])
+    base_command = list(tool_command) if tool_command else [paths["python"], paths["script"]]
+    cmd = _shell_join([*base_command, "--status"])
     lines.extend(
         [
             "if [ \"$ok\" -eq 1 ]; then",
-            f"  cd {shlex.quote(paths['repo'])}",
+            f"  cd {shlex.quote(paths['working_directory'])}",
             f"  bodnar_output=$(timeout {float(timeout_sec):g}s {cmd} 2>&1)",
             "  bodnar_rc=$?",
             "  bodnar_output=${bodnar_output//$'\\n'/; }",
@@ -648,6 +732,8 @@ def _redis_status_env(config: dict[str, Any], *, target: str) -> list[str]:
     enabled = configured_enabled and publisher == target
     env = [f"GNSS_REDIS_STATUS_ENABLED={'1' if enabled else '0'}"]
     env.append(f"GNSS_REDIS_STATUS_PUBLISHER={publisher}")
+    if enabled:
+        env.append(f"GNSS_STATUS_BACKEND={redis_status.get('backend', 'panoseti')}")
     if redis_status.get("addr"):
         env.append(f"GNSS_REDIS_STATUS_GRPC_ADDR={redis_status['addr']}")
     if redis_status.get("device_type"):
@@ -842,15 +928,15 @@ def _render_agent_service(
     logdir = _resolve_under_repo(repo, str(node.get("logdir") or "logging"))
     telem_dir = _resolve_under_repo(repo, str(node.get("telem_dir") or "telem"))
     max_file_mb, fsync_seconds = _telemetry_runtime_values(node)
+    tool_command = _tool_command(node, "agent")
     required_values = {
-        "python": node.get("python"),
-        "repo": repo,
-        "agent_script": agent_script,
         "cast_addr": node.get("cast_addr"),
         "ctrl_addr": node.get("ctrl_addr"),
         "logdir": logdir,
         "telem_dir": telem_dir,
     }
+    if tool_command is None:
+        required_values.update({"python": node.get("python"), "repo": repo, "agent_script": agent_script})
     _require_config_values(
         f"node {key}",
         required_values,
@@ -858,9 +944,7 @@ def _render_agent_service(
     )
     restart, restart_sec = _systemd_restart_values(systemd)
     args = [
-        node.get("python"),
-        "-u",
-        agent_script,
+        *_runtime_command(node, "agent", agent_script),
         "--cast_addr",
         node.get("cast_addr"),
         "--ctrl_addr",
@@ -882,7 +966,7 @@ def _render_agent_service(
         "gnss-agent.service.template",
         {
             "daq_name": node.get("daq_name", key),
-            "repo": repo,
+            "working_directory": _working_directory(node),
             "exec_start": _systemd_exec(args),
             "restart": restart,
             "restart_sec": f"{restart_sec:g}",
@@ -892,6 +976,8 @@ def _render_agent_service(
         **node,
         "repo": repo,
         "agent_script": agent_script,
+        "tool_command": tool_command,
+        "working_directory": _working_directory(node),
         "logdir": logdir,
         "telem_dir": telem_dir,
         "process": process,
@@ -921,23 +1007,21 @@ def _render_server_service(
     telem_dir = _resolve_under_repo(repo, str(server.get("telem_dir") or "telemetry"))
     receiver_manifest = mode_config.get("receiver_manifest") or server.get("receiver_manifest")
     receiver_manifest_path = (
-        _resolve_under_repo(repo, str(receiver_manifest)) if receiver_manifest else ""
+        _resolve_runtime_path(repo, str(receiver_manifest)) if receiver_manifest else ""
     )
     max_file_mb, fsync_seconds = _telemetry_runtime_values(server)
+    tool_command = _tool_command(server, "server")
     required_values = {
-        "python": server.get("python"),
-        "repo": repo,
-        "script": server_script,
         "bind_addr": server.get("bind_addr"),
         "logdir": logdir,
         "telem_dir": telem_dir,
     }
+    if tool_command is None:
+        required_values.update({"python": server.get("python"), "repo": repo, "script": server_script})
     _require_config_values("server", required_values, list(required_values))
     restart, restart_sec = _systemd_restart_values(systemd)
     args = [
-        server.get("python"),
-        "-u",
-        server_script,
+        *_runtime_command(server, "server", server_script),
         "--ip",
         server.get("bind_addr", "0.0.0.0:50051"),
         "--timing-mode",
@@ -961,7 +1045,7 @@ def _render_server_service(
     unit = _render_systemd_template(
         "gnss-server.service.template",
         {
-            "repo": repo,
+            "working_directory": _working_directory(server),
             "exec_start": _systemd_exec(args),
             "restart": restart,
             "restart_sec": f"{restart_sec:g}",
@@ -971,6 +1055,8 @@ def _render_server_service(
         **server,
         "repo": repo,
         "script": server_script,
+        "tool_command": tool_command,
+        "working_directory": _working_directory(server),
         "logdir": logdir,
         "telem_dir": telem_dir,
         "receiver_manifest": receiver_manifest_path,
@@ -1171,23 +1257,27 @@ def _server_status(
     receiver_manifest = server.get("receiver_manifest")
     receiver_manifest_path = ""
     if receiver_manifest:
-        receiver_manifest_path = _resolve_under_repo(repo, str(receiver_manifest)) if repo else str(receiver_manifest)
+        receiver_manifest_path = _resolve_runtime_path(repo, str(receiver_manifest))
 
     # Required-field checks catch malformed inventory entries before we try to
     # use those values in subprocess commands.
-    checks = _check_required_fields(
-        "server",
-        server,
-        ["daq_name", "python", "repo", "script", "logdir", "telem_dir", "screen", "bind_addr"],
-    )
+    tool_command = _tool_command(server, "server")
+    required_fields = ["daq_name", "logdir", "telem_dir", "screen", "bind_addr"]
+    if tool_command is None:
+        required_fields.extend(["python", "repo", "script"])
+    checks = _check_required_fields("server", server, required_fields)
 
     # These checks are local because the GNSS server is expected to run on the
     # orchestration/head node.
-    if server.get("python"):
-        checks.append(Check("server python executable", os.access(str(server["python"]), os.X_OK), str(server["python"])))
-    if repo:
-        checks.append(Check("server repo directory", Path(repo).is_dir(), repo))
-    checks.append(Check("server script file", Path(server_script).is_file(), server_script))
+    if tool_command is not None:
+        executable = shutil.which(tool_command[0])
+        checks.append(Check("server installed tool", executable is not None, executable or tool_command[0]))
+    else:
+        if server.get("python"):
+            checks.append(Check("server python executable", os.access(str(server["python"]), os.X_OK), str(server["python"])))
+        if repo:
+            checks.append(Check("server repo directory", Path(repo).is_dir(), repo))
+        checks.append(Check("server script file", Path(server_script).is_file(), server_script))
     checks.append(Check("server logdir parent", Path(logdir_path).parent.is_dir(), logdir_path))
     checks.append(Check("server telem_dir parent", Path(telem_dir_path).parent.is_dir(), telem_dir_path))
     if receiver_manifest_path:
@@ -1227,6 +1317,8 @@ def _server_status(
             "python": server.get("python"),
             "repo": repo,
             "script": server_script,
+            "tool_command": tool_command,
+            "working_directory": _working_directory(server),
             "logdir": logdir_path,
             "telem_dir": telem_dir_path,
             "receiver_manifest": receiver_manifest_path,
@@ -1268,28 +1360,35 @@ def _node_status(
     # Resolve the paths that future start/stop commands will use. The status
     # command reports these resolved values so config mistakes are easy to spot.
     repo = str(node.get("repo", ""))
-    agent_script = _resolve_under_repo(repo, str(node.get("agent_script", "agent_v1.py"))) if repo else ""
-    find_ublox = _resolve_under_repo(repo, str(node.get("find_ublox_script", "gnss_scripts/find_ublox.sh"))) if repo else ""
-    logdir = _resolve_under_repo(repo, str(node.get("logdir", "logging"))) if repo else ""
-    telem_dir = _resolve_under_repo(repo, str(node.get("telem_dir", "telem"))) if repo else ""
+    agent_script = _resolve_runtime_path(repo, str(node.get("agent_script", "agent_v1.py")))
+    find_ublox = _resolve_runtime_path(repo, str(node.get("find_ublox_script") or ""))
+    raw_detect = node.get("detect_command")
+    detect_command = (
+        [str(part) for part in raw_detect]
+        if isinstance(raw_detect, list)
+        else shlex.split(str(raw_detect)) if raw_detect else []
+    )
+    logdir = _resolve_runtime_path(repo, str(node.get("logdir", "logging")))
+    telem_dir = _resolve_runtime_path(repo, str(node.get("telem_dir", "telem")))
     bodnar = _bodnar_config(defaults, node)
     bodnar_present = _present(bodnar, False)
     bodnar_paths = _bodnar_paths(defaults, node)
 
     # These fields are the minimum needed to start an agent. Remote nodes also
     # require an SSH target; local nodes use paths on the orchestrator host.
+    tool_command = _tool_command(node, "agent")
     required_fields = [
         "daq_name",
-        "python",
-        "repo",
-        "agent_script",
-        "find_ublox_script",
         "logdir",
         "telem_dir",
         "cast_addr",
         "ctrl_addr",
         "verbosity",
     ]
+    if not detect_command:
+        required_fields.append("find_ublox_script")
+    if tool_command is None:
+        required_fields.extend(["python", "repo", "agent_script"])
     if not is_local:
         required_fields[1:1] = ["host", "ssh_user"]
     checks = _check_required_fields(
@@ -1303,11 +1402,14 @@ def _node_status(
     bodnar_detected: bool | None = None
     register_verify_report: dict[str, Any] | None = None
     if check_bodnar and bodnar_present:
+        bodnar_required_fields = ["out1_enabled", "frequency_hz", "gnss"]
+        if not bodnar_paths["tool_command"]:
+            bodnar_required_fields.extend(["repo", "python", "configure_script"])
         checks.extend(
             _check_required_fields(
                 f"nodes.{key}.bodnar",
                 bodnar,
-                ["repo", "python", "configure_script", "out1_enabled", "frequency_hz", "gnss"],
+                bodnar_required_fields,
             )
         )
     elif check_bodnar:
@@ -1331,10 +1433,12 @@ def _node_status(
         if transport_result.returncode == 0:
             preflight_script = _node_preflight_script(
                 {
-                    "python": str(node["python"]),
+                    "python": str(node.get("python") or ""),
                     "repo": repo,
                     "agent_script": agent_script,
+                    "tool_executable": tool_command[0] if tool_command else "",
                     "find_ublox_script": find_ublox,
+                    "detect_command": detect_command,
                     "logdir": logdir,
                     "telem_dir": telem_dir,
                 },
@@ -1404,7 +1508,10 @@ def _node_status(
             "python": node.get("python"),
             "repo": repo,
             "agent_script": agent_script,
+            "tool_command": tool_command,
+            "working_directory": _working_directory(node),
             "find_ublox_script": find_ublox,
+            "detect_command": detect_command,
             "logdir": logdir,
             "telem_dir": telem_dir,
             "cast_addr": node.get("cast_addr"),
@@ -1418,6 +1525,8 @@ def _node_status(
                 "python": bodnar_paths["python"],
                 "repo": bodnar_paths["repo"],
                 "configure_script": bodnar_paths["script"],
+                "tool_command": bodnar_paths["tool_command"],
+                "working_directory": bodnar_paths["working_directory"],
                 "out1_enabled": bodnar.get("out1_enabled"),
                 "frequency_hz": bodnar.get("frequency_hz"),
                 "gnss": bodnar.get("gnss"),
@@ -1463,7 +1572,11 @@ def status_gnss(
     mode_settings = _mode_settings(config, mode)
 
     # Always include the server status. Node filtering applies only to DAQ nodes.
-    results = [_server_status(config, check_process=True, runner_override=runner)]
+    status_config = dict(config)
+    status_config["server"] = dict(config.get("server", {}))
+    if mode_settings.get("receiver_manifest"):
+        status_config["server"]["receiver_manifest"] = mode_settings["receiver_manifest"]
+    results = [_server_status(status_config, check_process=True, runner_override=runner)]
     for key, node in raw_nodes.items():
         # Let users filter by inventory key, SSH host, or DAQ/display name.
         if selected and key not in selected and node.get("host") not in selected and node.get("daq_name") not in selected:
@@ -1533,9 +1646,7 @@ def _server_launch_script(server_status: dict[str, Any], run_stamp: str) -> tupl
     latest_log = _latest_log_path(logdir, screen)
 
     server_args = [
-        server["python"],
-        "-u",
-        resolved["script"],
+        *_runtime_command(server, "server", resolved["script"]),
         "--ip",
         server.get("bind_addr", "0.0.0.0:50051"),
         "--timing-mode",
@@ -1788,9 +1899,7 @@ def _agent_launch_script(node_status: dict[str, Any], run_stamp: str) -> tuple[s
     latest_log = _latest_log_path(logdir, screen)
 
     agent_args = [
-        node["python"],
-        "-u",
-        resolved["agent_script"],
+        *_runtime_command(node, "agent", resolved["agent_script"]),
         "--cast_addr",
         resolved["cast_addr"],
         "--ctrl_addr",
@@ -1812,7 +1921,7 @@ def _agent_launch_script(node_status: dict[str, Any], run_stamp: str) -> tuple[s
             f"ln -sfn {shlex.quote(Path(log_path).name)} {shlex.quote(latest_log)}",
             f"screen -S {shlex.quote(screen)} -X quit >/dev/null 2>&1 || true",
             "sleep 0.5",
-            f"cd {shlex.quote(resolved['repo'])}",
+            f"cd {shlex.quote(resolved['working_directory'])}",
             f"screen -dmS {shlex.quote(screen)} bash -c {shlex.quote(inner)}",
             "sleep 1",
             *_screen_verify_script(screen, log_path),
@@ -1954,19 +2063,20 @@ def _start_node(
     )
 
 
-def _bodnar_configure_script(paths: dict[str, str], bodnar: dict[str, Any]) -> str:
+def _bodnar_configure_script(paths: dict[str, Any], bodnar: dict[str, Any]) -> str:
     """Build a node script that configures a Leo Bodnar LBE-1420."""
 
-    commands = ["set -e", f"cd {shlex.quote(paths['repo'])}"]
+    commands = ["set -e", f"cd {shlex.quote(paths['working_directory'])}"]
+    base_command = list(paths.get("tool_command") or [paths["python"], paths["script"]])
     out1_enabled = bodnar.get("out1_enabled")
     frequency = bodnar.get("frequency_hz")
     gnss = bodnar.get("gnss")
     if out1_enabled is not None:
-        commands.append(_shell_join([paths["python"], paths["script"], "--enable", 1 if _str_bool(out1_enabled) else 0]))
+        commands.append(_shell_join([*base_command, "--enable", 1 if _str_bool(out1_enabled) else 0]))
     if frequency is not None and frequency != "":
-        commands.append(_shell_join([paths["python"], paths["script"], "--f1", frequency]))
+        commands.append(_shell_join([*base_command, "--f1", frequency]))
     if gnss:
-        commands.append(_shell_join([paths["python"], paths["script"], "--gnss", gnss]))
+        commands.append(_shell_join([*base_command, "--gnss", gnss]))
     return "\n".join(commands)
 
 
@@ -2146,17 +2256,24 @@ def start_gnss(
 def _service_preflight_script(resolved: dict[str, Any], kind: str) -> str:
     """Build lightweight path checks used before installing a service."""
 
-    script_key = "agent_script" if kind == "agent" else "script"
-    return "\n".join(
-        [
-            "set -euo pipefail",
-            f"test -x {shlex.quote(str(resolved['python']))}",
-            f"test -d {shlex.quote(str(resolved['repo']))}",
-            f"test -f {shlex.quote(str(resolved[script_key]))}",
-            f"mkdir -p {shlex.quote(str(resolved.get('logdir', '')))} "
-            f"{shlex.quote(str(resolved['telem_dir']))}",
-        ]
+    lines = ["set -euo pipefail"]
+    if resolved.get("tool_command"):
+        lines.append(f"command -v {shlex.quote(str(resolved['tool_command'][0]))} >/dev/null")
+        lines.append(f"test -d {shlex.quote(str(resolved['working_directory']))}")
+    else:
+        script_key = "agent_script" if kind == "agent" else "script"
+        lines.extend(
+            [
+                f"test -x {shlex.quote(str(resolved['python']))}",
+                f"test -d {shlex.quote(str(resolved['repo']))}",
+                f"test -f {shlex.quote(str(resolved[script_key]))}",
+            ]
+        )
+    lines.append(
+        f"mkdir -p {shlex.quote(str(resolved.get('logdir', '')))} "
+        f"{shlex.quote(str(resolved['telem_dir']))}"
     )
+    return "\n".join(lines)
 
 
 def _install_one_service(
@@ -2548,9 +2665,9 @@ def _node_stop_status(key: str, raw_node: dict[str, Any], defaults: dict[str, An
 
     node = _merge(defaults, raw_node)
     repo = str(node.get("repo", ""))
-    agent_script = _resolve_under_repo(repo, str(node.get("agent_script", "agent_v1.py"))) if repo else ""
-    logdir = _resolve_under_repo(repo, str(node.get("logdir", "logging"))) if repo else ""
-    telem_dir = _resolve_under_repo(repo, str(node.get("telem_dir", "telem"))) if repo else ""
+    agent_script = _resolve_runtime_path(repo, str(node.get("agent_script", "agent_v1.py")))
+    logdir = _resolve_runtime_path(repo, str(node.get("logdir", "logging")))
+    telem_dir = _resolve_runtime_path(repo, str(node.get("telem_dir", "telem")))
     return {
         "kind": "node",
         "key": key,
@@ -3060,7 +3177,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             help="override process runner from deployment config",
         )
 
-    parser = argparse.ArgumentParser(prog="gnss_orchestrator.py", description="GNSS deployment orchestrator")
+    parser = argparse.ArgumentParser(prog="ublox-f9t", description="GNSS deployment orchestrator")
     add_config_argument(parser, default=str(DEFAULT_CONFIG))
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -3117,6 +3234,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     install.add_argument("--include-disabled", action="store_true", help="include nodes marked present=false")
     install.add_argument("--dry-run", action="store_true", help="render units without installing them")
     install.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+
+    agent = sub.add_parser(
+        "agent",
+        add_help=False,
+        help="run the GNSS receiver agent on a DAQ node",
+    )
+    agent.add_argument("args", nargs=argparse.REMAINDER)
+
+    sub.add_parser(
+        "detect",
+        help="list connected U-Blox USB serial receivers",
+        description="List connected U-Blox USB serial receivers.",
+    )
+
+    server = sub.add_parser(
+        "server",
+        add_help=False,
+        help="run the GNSS caster/control server",
+    )
+    server.add_argument("args", nargs=argparse.REMAINDER)
     return parser.parse_args(argv)
 
 
@@ -3128,8 +3265,22 @@ def main(argv: list[str] | None = None) -> int:
         a node marked required fails validation.
     """
 
-    args = parse_args(argv)
+    command_args = list(sys.argv[1:] if argv is None else argv)
+    if command_args and command_args[0] == "agent":
+        from agent_v1 import cli_main as agent_main
+
+        return agent_main(command_args[1:])
+    if command_args and command_args[0] == "server":
+        from server_v1 import main as server_main
+
+        return server_main(command_args[1:])
+    args = parse_args(command_args)
     try:
+        if args.command == "detect":
+            from ublox_f9t.detect import main as detect_main
+
+            return detect_main()
+
         if args.command == "status":
             report = status_gnss(
                 args.config,

@@ -1,0 +1,36 @@
+[project]
+name = "ublox-f9t-config"
+version = "0.1.0"
+description = "Configure and orchestrate U-Blox F9T GNSS receivers"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+dependencies = [
+    "grpcio>=1.76,<2",
+    "json5>=0.12,<1",
+    "protobuf>=6.33,<7",
+    "pyserial>=3.5,<4",
+    "pyubx2>=1.2.58,<2",
+]
+
+[project.scripts]
+ublox-f9t = "ublox_f9t.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+exclude = ["gnss_scripts/*.pdf"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ublox_f9t", "gnss_scripts"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"agent_v1.py" = "agent_v1.py"
+"server_v1.py" = "server_v1.py"
+"logging_setup.py" = "logging_setup.py"
+"caster_setup_pb2.py" = "caster_setup_pb2.py"
+"caster_setup_pb2_grpc.py" = "caster_setup_pb2_grpc.py"
+"manifest_f9t.json5" = "manifest_f9t.json5"
+"manifest_f9t_absolute.json5" = "manifest_f9t_absolute.json5"

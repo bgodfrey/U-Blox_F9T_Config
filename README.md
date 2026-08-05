@@ -61,13 +61,16 @@ between receivers. The orchestrated gRPC setup is what makes the receivers talk
 to each other through the headnode and provides the normal logging and telemetry
 path.
 
-The intended way to operate the system is through:
+The intended way to operate the system is through the `ublox-f9t` CLI:
 
-```text
-gnss_scripts/gnss_orchestrator.py
+```bash
+uv tool install .
+ublox-f9t --help
+ublox-f9t status
 ```
 
-The orchestrator reads a deployment config, starts and stops the local GNSS
+The CLI delegates to the existing orchestrator, which reads a deployment
+config, starts and stops the local GNSS
 server and local or remote agents, checks node readiness, optionally configures
 Leo Bodnar LBE-1420
 10 MHz references, and can verify receiver registers against a selected
